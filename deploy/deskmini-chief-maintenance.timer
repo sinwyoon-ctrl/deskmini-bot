@@ -1,0 +1,11 @@
+[Unit]
+Description=Run DeskMini Chief maintenance daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
+

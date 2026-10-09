@@ -1,0 +1,14 @@
+[Unit]
+Description=DeskMini Chief state backup and retention
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ionenet/deskmini-bot
+ExecStart=/usr/bin/python3 -m app.maintenance
+Environment=DESKMINI_CHIEF_ENV=/home/ionenet/.config/notify.env
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ionenet/.local/state/deskmini-chief
+

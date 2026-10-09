@@ -1,0 +1,9 @@
+[gemini]
+adapter = "gemini_rest"
+model = "auto"
+
+[claude]
+model = "sonnet"
+effort = "medium"
+tools = ["Read", "Edit", "Write", "Glob", "Grep"]
+

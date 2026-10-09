@@ -1,0 +1,11 @@
+[projects.deskmini]
+repo_path = "/home/ionenet/deskmini"
+default_branch = "main"
+checks = [
+  ["npm", "test"],
+  ["npm", "run", "build"],
+  ["git", "diff", "--check"],
+]
+deploy_enabled = false
+deploy_environment = "staging"
+

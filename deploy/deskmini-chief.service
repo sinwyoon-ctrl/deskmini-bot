@@ -1,0 +1,25 @@
+[Unit]
+Description=DeskMini Telegram AI Chief of Staff
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ionenet/deskmini-bot
+ExecStart=/usr/bin/python3 -m app.bot
+Environment=PYTHONUNBUFFERED=1
+Environment=DESKMINI_CHIEF_ENV=/home/ionenet/.config/notify.env
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=20s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ionenet/.local/state/deskmini-chief /home/ionenet/deskmini
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+
+[Install]
+WantedBy=default.target
+
