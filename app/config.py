@@ -56,6 +56,7 @@ class Settings:
     max_active_tasks: int
     approval_ttl_seconds: int
     projects: dict[str, ProjectConfig]
+    env_path: Path | None = None
 
     @classmethod
     def load(cls, root: Path | None = None) -> "Settings":
@@ -112,6 +113,7 @@ class Settings:
             max_active_tasks=int(env("DESKMINI_MAX_ACTIVE_TASKS", "1")),
             approval_ttl_seconds=int(env("DESKMINI_APPROVAL_TTL", "600")),
             projects=projects,
+            env_path=env_path,
         )
 
 

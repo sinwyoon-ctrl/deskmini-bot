@@ -69,7 +69,7 @@ class ReleaseIntegrationTests(unittest.TestCase):
             worktree_root=self.worktree_root,
             default_branch="main",
             checks=(
-                (sys.executable, "-c", isolation_probe),
+                (os.path.realpath(sys.executable), "-c", isolation_probe),
                 ("git", "diff", "--check"),
             ),
             deploy_enabled=True,

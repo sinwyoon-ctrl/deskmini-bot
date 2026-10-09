@@ -102,9 +102,10 @@ merge,push,deploy는 서로 다른 의도다. 단순한 '응'은 승인 의도�
 
 
 class GeminiInterpreter:
-    def __init__(self, script_path: Path, timeout_seconds: int = 70):
+    def __init__(self, script_path: Path, timeout_seconds: int = 70, model: str = "auto"):
         self.script_path = script_path
         self.timeout_seconds = timeout_seconds
+        self.model = model if re.fullmatch(r"[A-Za-z0-9._-]{1,80}", model or "") else "auto"
 
     def available(self) -> bool:
         return self.script_path.is_file()
@@ -163,15 +164,29 @@ class GeminiInterpreter:
             summary=redact_text(str(data.get("summary", "")), 2_000),
         )
 
+    def chat(self, envelope: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+        """대화 응답용 호출. (JSON 객체, 실제 사용 모델) 을 돌려준다."""
+        output, model = self._run(json.dumps(envelope, ensure_ascii=False), agent="telegram-chat")
+        try:
+            return _extract_json(output), model
+        except ValueError as exc:
+            raise InterpretationUnavailable("Gemini chat returned invalid JSON") from exc
+
     def _invoke(self, prompt: str, *, agent: str) -> str:
+        return self._run(prompt, agent=agent)[0]
+
+    def _run(self, prompt: str, *, agent: str) -> tuple[str, str | None]:
         if not self.available():
             raise InterpretationUnavailable("Gemini REST adapter is not installed")
         environment = os.environ.copy()
         environment["IONE_COST_TOOL"] = "deskmini-chief"
         environment["IONE_COST_AGENT"] = agent
         try:
+            argv = [sys.executable, str(self.script_path), prompt]
+            if self.model != "auto":
+                argv.append(self.model)
             result = subprocess.run(
-                [sys.executable, str(self.script_path), prompt],
+                argv,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -186,7 +201,8 @@ class GeminiInterpreter:
             raise InterpretationUnavailable(type(exc).__name__) from exc
         if result.returncode != 0:
             raise InterpretationUnavailable(redact_text(result.stdout or result.stderr, 500))
-        return result.stdout
+        model_match = re.search(r"\[gemini_rest\] model=([A-Za-z0-9._-]+)", result.stderr or "")
+        return result.stdout, model_match.group(1) if model_match else None
 
 
 def _extract_json(text: str) -> dict[str, Any]:

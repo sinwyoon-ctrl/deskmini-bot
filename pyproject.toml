@@ -3,7 +3,7 @@ name = "deskmini-chief"
 version = "0.1.0"
 description = "Telegram control plane for the DeskMini worker"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["anthropic>=1.12"]
 
 [project.scripts]
 deskmini-chief = "app.bot:main"

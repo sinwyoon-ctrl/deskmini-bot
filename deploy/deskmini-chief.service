@@ -6,7 +6,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/ionenet/deskmini-bot
-ExecStart=/usr/bin/python3 -m app.bot
+ExecStart=/home/ionenet/deskmini-bot/.venv/bin/python -m app.bot
 Environment=PYTHONUNBUFFERED=1
 Environment=DESKMINI_CHIEF_ENV=/home/ionenet/.config/notify.env
 Restart=on-failure

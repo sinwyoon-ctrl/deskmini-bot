@@ -9,6 +9,7 @@ from typing import Any
 
 from adapters.gemini_rest import GeminiInterpreter, InterpretationUnavailable
 from adapters.telegram import TelegramAPI, TelegramError
+from app.chat import ChatConfig, ChatResponder
 from app.collector import collect_host_status, run_fixed
 from app.config import Settings
 from app.state import StateStore
@@ -47,6 +48,24 @@ def run_preflight(settings: Settings) -> dict[str, Any]:
         gemini_ok = False
         gemini_evidence = {"error": type(exc).__name__}
     checks["gemini_adapter"] = result(gemini_ok, gemini_evidence, blocking=True)
+
+    try:
+        import anthropic
+
+        sdk_version: str | None = anthropic.__version__
+    except ImportError:
+        sdk_version = None
+    models_path = settings.root / "config" / "models.toml"
+    responder = ChatResponder(ChatConfig.load(models_path), env_path=settings.env_path, gemini=gemini)
+    order = responder.active_providers()
+    checks["chat_provider"] = result(
+        bool(order),
+        {
+            "anthropic_sdk": sdk_version,
+            "order": [f"{name}:{model}" for name, model in order],
+            "claude_key_present": any(name == "claude" for name, _ in order),
+        },
+    )
 
     for project_id, project in settings.projects.items():
         repo = project.repo_path

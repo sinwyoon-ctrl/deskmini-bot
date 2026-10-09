@@ -681,3 +681,55 @@ class StateStore:
             item["payload"] = json.loads(item.pop("payload_json"))
             result.append(item)
         return result
+
+    def add_chat_message(
+        self,
+        chat_id: int,
+        role: str,
+        text: str,
+        provider: str | None = None,
+        *,
+        keep: int = 200,
+    ) -> None:
+        if role not in {"user", "assistant"}:
+            raise ValueError("Unsupported chat role")
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO chat_messages(chat_id, role, text, provider, created_at) VALUES (?, ?, ?, ?, ?)",
+                (chat_id, role, redact_text(text, 4_000), provider, utc_now()),
+            )
+            connection.execute(
+                """
+                DELETE FROM chat_messages WHERE chat_id=? AND id NOT IN (
+                    SELECT id FROM chat_messages WHERE chat_id=? ORDER BY id DESC LIMIT ?
+                )
+                """,
+                (chat_id, chat_id, keep),
+            )
+
+    def recent_chat_messages(self, chat_id: int, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT role, text, provider, created_at FROM chat_messages
+                WHERE chat_id=? ORDER BY id DESC LIMIT ?
+                """,
+                (chat_id, limit),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
+    def recent_events_by_type(self, event_type: str, limit: int = 5) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT created_at, event_type, source, payload_json FROM events
+                WHERE event_type=? ORDER BY id DESC LIMIT ?
+                """,
+                (event_type, limit),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = json.loads(item.pop("payload_json"))
+            result.append(item)
+        return result

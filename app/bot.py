@@ -12,8 +12,20 @@ from typing import Any
 
 from adapters.gemini_rest import GeminiInterpreter
 from adapters.telegram import TelegramAPI, TelegramError, inline_keyboard
+from app.chat import FALLBACK_TEXT, ChatConfig, ChatResponder, ChatResult, ChatUnavailable, gemini_model
 from app.collector import bytes_human, collect_host_status
 from app.config import Settings
+from app.context import (
+    WorkspacePaths,
+    board_text,
+    build_snapshot,
+    home_relative,
+    hub_locks,
+    recent_hub_logs,
+    recent_work_dirs,
+    registered_repos,
+    repo_summary,
+)
 from app.policy import Decision, Policy
 from app.release import ReleaseError, ReleaseManager
 from app.runner import RunnerError, TaskRunner
@@ -45,8 +57,12 @@ class ChiefBot:
             settings.telegram_token,
             request_timeout=settings.telegram_timeout_seconds + 15,
         )
-        self.gemini = GeminiInterpreter(settings.gemini_script)
+        models_path = settings.root / "config" / "models.toml"
+        self.gemini = GeminiInterpreter(settings.gemini_script, model=gemini_model(models_path))
         self.policy = Policy(self.gemini, list(settings.projects))
+        self.chat_config = ChatConfig.load(models_path)
+        self.chat = ChatResponder(self.chat_config, env_path=settings.env_path, gemini=self.gemini)
+        self.paths = WorkspacePaths.default()
         self.runner = TaskRunner(settings, self.store)
         self.verifier = Verifier(settings, self.store, self.gemini)
         self.release = ReleaseManager(settings, self.store)
@@ -64,7 +80,7 @@ class ChiefBot:
             "chief-started",
             "🏛️ <b>DeskMini 비서실장 시작</b>\n\n"
             "상태 조회와 작업 접수를 받을 준비가 됐습니다.\n"
-            "명령: /status · /tasks · /new",
+            "명령: /status · /tasks · /hub · /git · /work · /new · /help",
         )
         while not self.stopping:
             self._process_futures()
@@ -165,14 +181,71 @@ class ChiefBot:
         if not isinstance(text, str) or not text.strip():
             self._send("텍스트 메시지만 처리할 수 있습니다.")
             return
-        decision = self.policy.decide(text)
-        self._execute_decision(decision, text, update_id)
+        decision = self.policy.decide_fixed(text)
+        if decision is not None:
+            self._execute_decision(decision, text, update_id)
+            return
+        self._chat_reply(text, update_id)
+
+    def _chat_reply(self, text: str, update_id: int | None) -> None:
+        chat_id = self.settings.allowed_chat_id
+        history = self.store.recent_chat_messages(chat_id, self.chat_config.history_turns)
+        snapshot = build_snapshot(self.store, self.paths)
+        try:
+            result = self.chat.respond(text, history, snapshot)
+        except ChatUnavailable as exc:
+            self.store.add_chat_message(chat_id, "user", text)
+            self.store.add_event(
+                None, None, "CHAT_UNAVAILABLE", "chat", {"errors": list(exc.errors)}
+            )
+            self._send(esc(FALLBACK_TEXT))
+            return
+        self.store.add_chat_message(chat_id, "user", text)
+        self.store.add_chat_message(chat_id, "assistant", result.reply, result.provider)
+        decision = self.policy.from_chat_action(result.action, text)
+        self._record_chat_decision(result, decision)
+        self._send(esc(redact_text(result.reply, 3_500)))
+        if decision is not None:
+            self._execute_decision(decision, text, update_id)
+
+    def _record_chat_decision(self, result: ChatResult, decision: Decision | None) -> None:
+        self.store.add_event(
+            None,
+            None,
+            "CHAT_DECISION",
+            "chat",
+            {
+                "provider": result.provider,
+                "model": result.model,
+                "proposed_action": result.action.type,
+                "proposed_task_id": result.action.task_id,
+                "accepted_intent": decision.intent if decision else None,
+                "latency_ms": result.latency_ms,
+                "usage": result.usage,
+                "fallback_errors": list(result.errors),
+            },
+        )
 
     def _execute_decision(
         self, decision: Decision, original_text: str, source_update_id: int | None = None
     ) -> None:
         if decision.intent == "help":
             self._send(self._help_text())
+            return
+        if decision.intent == "usage":
+            self._send(decision.message or self._help_text())
+            return
+        if decision.intent == "hub":
+            self._send(self._hub_text())
+            return
+        if decision.intent == "git":
+            self._send(self._git_text())
+            return
+        if decision.intent == "work":
+            self._send(self._work_text())
+            return
+        if decision.intent == "model":
+            self._send(self._model_text())
             return
         if decision.intent == "status":
             self._send(self._status_text())
@@ -216,6 +289,12 @@ class ChiefBot:
                 self.store.set_task_fields(task["id"], telegram_message_id=response["message_id"])
             return
         if decision.intent == "stop_task" and decision.task_id:
+            if decision.needs_confirmation:
+                self._send(
+                    f"중단하려면 버튼을 눌러 주세요: <code>{esc(decision.task_id)}</code>",
+                    reply_markup=self._running_keyboard(decision.task_id),
+                )
+                return
             self._stop_task(decision.task_id)
             return
         if decision.intent in {"merge", "push", "deploy"}:
@@ -518,8 +597,71 @@ class ChiefBot:
             "/tasks — 최근 작업\n"
             "/task T-... — 작업 상세\n"
             "/new 작업내용 — 새 작업 발주\n"
-            "/stop T-... — 작업 중단\n\n"
-            "자연어 질문과 작업 지시도 받을 수 있습니다. 병합·Push·배포는 각각 별도 승인합니다."
+            "/stop T-... — 작업 중단\n"
+            "/hub — Codex·Claude 공용 작업 기록과 잠금\n"
+            "/git — 저장소별 최근 커밋\n"
+            "/work — ~/work 최근 작업 폴더\n"
+            "/model — 현재 대화 모델\n\n"
+            "그 밖의 말은 대화로 답합니다. 작업 착수·중단·병합·Push·배포는 항상 버튼 승인을 거칩니다."
+        )
+
+    def _hub_text(self) -> str:
+        board = board_text(self.paths, 1_800) or "BOARD.md 를 읽지 못했습니다."
+        locks = hub_locks(self.paths)
+        logs = recent_hub_logs(self.paths, 5, 300)
+        lock_lines = [f"• {esc(item)}" for item in locks] or ["• 없음"]
+        log_lines = [f"• <code>{esc(item['file'][:15])}</code> {esc(item['text'])}" for item in logs] or ["• 기록 없음"]
+        return _fit(
+            "<b>공용 작업 잠금</b>\n" + "\n".join(lock_lines)
+            + "\n\n<b>최근 작업 기록</b>\n" + "\n".join(log_lines)
+            + "\n\n<b>BOARD 요약</b>\n<pre>" + esc(board) + "</pre>"
+        )
+
+    def _git_text(self) -> str:
+        repos = registered_repos(self.paths)
+        if not repos:
+            return "등록된 저장소 목록(agent-hub/hosts/ionenet.conf)을 읽지 못했습니다."
+        blocks = []
+        for name, path in repos:
+            summary = repo_summary(path)
+            header = f"<b>{esc(name)}</b> <code>{esc(home_relative(path, self.paths.home))}</code>"
+            if not summary["ok"]:
+                blocks.append(f"{header}\n• 미확인: {esc(summary.get('error') or '')}")
+                continue
+            dirty = summary["uncommitted"]
+            commits = "\n".join(f"• <code>{esc(line)}</code>" for line in summary["commits"]) or "• 커밋 없음"
+            blocks.append(
+                f"{header}\n{commits}\n미커밋 변경: {esc('미확인' if dirty is None else f'{dirty}개')}"
+            )
+        return _fit("\n\n".join(blocks))
+
+    def _work_text(self) -> str:
+        dirs = recent_work_dirs(self.paths, 8)
+        if not dirs:
+            return f"<code>{esc(home_relative(self.paths.work, self.paths.home))}</code> 아래에 작업 폴더가 없거나 읽지 못했습니다."
+        lines = [f"• {esc(item['modified'])} · <code>{esc(item['name'])}</code>" for item in dirs]
+        return _fit("<b>최근 수정된 작업 폴더</b> (~/work)\n" + "\n".join(lines))
+
+    def _model_text(self) -> str:
+        order = self.chat.active_providers()
+        if order:
+            provider, model = order[0]
+            label = "Claude API" if provider == "claude" else "Gemini 무료 REST"
+            active = f"{label} · <code>{esc(model)}</code>"
+        else:
+            active = "사용 가능한 대화 모델 없음 (고정 명령만 동작)"
+        fallback = " → ".join(f"{name}({model})" for name, model in order[1:]) or "없음"
+        key_state = "있음" if any(name == "claude" for name, _ in order) else "없음"
+        last = self.store.recent_events_by_type("CHAT_DECISION", 1)
+        last_line = "없음"
+        if last:
+            payload = last[0]["payload"]
+            last_line = f"{payload.get('provider')} · {payload.get('model')} · {last[0]['created_at']}"
+        return (
+            f"<b>현재 대화 모델</b>\n{active}\n\n"
+            f"예비: {esc(fallback)}\n"
+            f"Claude API 키: {key_state} (값은 표시하지 않음)\n"
+            f"마지막 응답: {esc(last_line)}"
         )
 
     def _send(self, text: str, *, reply_markup: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -597,6 +739,17 @@ class ChiefBot:
                 )
             else:
                 self.store.update_outbox(item["id"], success=True)
+
+
+def _fit(text: str, limit: int = 4_000) -> str:
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    # 잘린 HTML 태그가 남지 않게 마지막 줄을 버리고, 열린 <pre> 를 닫는다.
+    cut = cut[: cut.rfind("\n")] if "\n" in cut else cut
+    if cut.count("<pre>") > cut.count("</pre>"):
+        cut += "</pre>"
+    return cut + "\n…(생략)"
 
 
 def main() -> None:
