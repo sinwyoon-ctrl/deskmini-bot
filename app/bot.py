@@ -4,17 +4,54 @@ import html
 import json
 import logging
 import signal
+import stat
 import sys
+import re
 import time
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from adapters.gemini_rest import GeminiInterpreter
 from adapters.telegram import TelegramAPI, TelegramError, inline_keyboard
+from app.alerts import (
+    SEVERITY_ICONS,
+    AlertConfig,
+    AlertEvent,
+    AlertPrefs,
+    AlertStore,
+    alert_text,
+    brief_due,
+    decide_delivery,
+    format_duration,
+    in_quiet_hours,
+    keyboard_rows,
+    parse_duration,
+    MAX_QUIET_SECONDS,
+)
 from app.chat import FALLBACK_TEXT, ChatConfig, ChatResponder, ChatResult, ChatUnavailable, gemini_model
 from app.collector import bytes_human, collect_host_status
 from app.config import Settings
+from app.files import (
+    TEXT_INLINE_CHARS,
+    check_deliverable,
+    list_deliverables,
+    open_checked,
+    read_redacted_text,
+    resolve_allowed,
+)
+from app.jobs import (
+    STATUS_ICONS,
+    STATUS_LABELS,
+    JobObservation,
+    JobsConfig,
+    clean_log_lines,
+    discover_jobs,
+    match_job,
+    tail_text,
+)
 from app.context import (
     WorkspacePaths,
     board_text,
@@ -29,9 +66,10 @@ from app.context import (
 from app.policy import Decision, Policy
 from app.release import ReleaseError, ReleaseManager, ReleaseRefused
 from app.runner import RunnerError, TaskRunner
-from app.redact import redact_text
+from app.redact import redact_html, redact_text
 from app.state import ConflictError, StateStore
 from app.verify import VerificationError, Verifier
+from app.watch import Observation, detect
 
 
 LOG = logging.getLogger("deskmini-chief")
@@ -46,7 +84,9 @@ ACTIVE_STATES = (
 
 
 def esc(value: Any) -> str:
-    return html.escape(str(value), quote=True)
+    """평문을 먼저 마스킹한 뒤 HTML 이스케이프한다(이스케이프된 글자를 다시 마스킹하면 태그가 깨진다)."""
+    text = str(value)
+    return html.escape(redact_text(text, len(text) + 1), quote=True)
 
 
 class ChiefBot:
@@ -71,6 +111,14 @@ class ChiefBot:
         self.release_futures: dict[str, Future[dict[str, Any]]] = {}
         self.last_card_update: dict[str, float] = {}
         self.stopping = False
+        # 감시기·알림. 시뮬레이터는 clock·job_scanner·observer 를 바꾸거나 watch_tick(observation=...) 을 쓴다.
+        self.alert_config = AlertConfig.load(settings.root / "config" / "alerts.toml")
+        self.jobs_config = JobsConfig.load(settings.root / "config" / "jobs.toml")
+        self.alerts = AlertStore(self.store)
+        self.clock: Callable[[], datetime] = lambda: datetime.now(UTC)
+        self.job_scanner: Callable[[datetime], list[JobObservation]] = self._scan_jobs
+        self.observer: Callable[[datetime], Observation] = self.observe
+        self.last_watch_monotonic: float | None = None
 
     def run(self) -> None:
         me = self.telegram.get_me()
@@ -80,12 +128,13 @@ class ChiefBot:
             "chief-started",
             "🏛️ <b>DeskMini 비서실장 시작</b>\n\n"
             "상태 조회와 작업 접수를 받을 준비가 됐습니다.\n"
-            "명령: /status · /tasks · /hub · /git · /work · /new · /help",
+            "명령: /status · /tasks · /jobs · /files · /hub · /git · /work · /new · /help",
         )
         while not self.stopping:
             self._process_futures()
             self._reconcile_tasks()
             self._flush_outbox()
+            self._maybe_watch()
             offset = self.store.next_update_offset()
             try:
                 updates = self.telegram.get_updates(offset, self.settings.telegram_timeout_seconds)
@@ -204,7 +253,12 @@ class ChiefBot:
         self.store.add_chat_message(chat_id, "assistant", result.reply, result.provider)
         decision = self.policy.from_chat_action(result.action, text)
         self._record_chat_decision(result, decision)
-        self._send(esc(redact_text(result.reply, 3_500)))
+        reply = result.reply
+        if decision is not None and decision.intent in IMMEDIATE_INTENTS and APPROVAL_CLAIM_RE.search(reply):
+            # 알림 설정·결과물 목록은 승인 없이 바로 처리되고 실제 결과는 아래 명령 응답이 알린다.
+            # 모델이 "승인 카드를 띄웠다"처럼 사실과 다른 말을 하면 그 문장 대신 코드가 만든 한 줄로 바꾼다.
+            reply = IMMEDIATE_REPLIES[decision.intent]
+        self._send(esc(redact_text(reply, 3_500)))
         if decision is not None:
             self._execute_decision(decision, text, update_id)
 
@@ -249,6 +303,24 @@ class ChiefBot:
             return
         if decision.intent == "status":
             self._send(self._status_text())
+            return
+        if decision.intent == "jobs":
+            self._send(self._jobs_text())
+            return
+        if decision.intent == "files":
+            self._files_command(decision.argument)
+            return
+        if decision.intent == "logs":
+            self._logs_command(decision.argument)
+            return
+        if decision.intent == "quiet":
+            self._quiet_command(decision.argument)
+            return
+        if decision.intent == "alerts":
+            self._alerts_command(decision.argument)
+            return
+        if decision.intent == "brief":
+            self._send(self.brief_text(self.clock()))
             return
         if decision.intent == "list_tasks":
             self._send(self._tasks_text())
@@ -369,6 +441,8 @@ class ChiefBot:
             task_id = data.split(":", 1)[1]
             self.store.transition(task_id, expected_state="AWAITING_START", new_state="CANCELLED")
             self._send(f"취소했습니다: <code>{esc(task_id)}</code>")
+            return
+        self._watch_callback(data)
 
     def _reconcile_tasks(self) -> None:
         for task in self.store.list_tasks_in_states(ACTIVE_STATES):
@@ -406,6 +480,8 @@ class ChiefBot:
                 self._offer_release(task_id, "merge")
             else:
                 self._send(self._task_text(task_id))
+            # 이미 알렸으니 감시기가 같은 전이를 다시 알리지 않게 남긴다.
+            self.alerts.record_bot_notice(f"task:{task_id}:{task['state']}", self.clock())
 
         for task_id, future in list(self.release_futures.items()):
             if not future.done():
@@ -590,8 +666,8 @@ class ChiefBot:
             f"판정: <b>{esc(operation['state'])}</b>\n\n"
             "<b>관측 증거</b>\n"
             f"작업: <code>{esc(operation['task_id'])}</code>\n"
-            f"이전: <code>{esc(json.dumps(operation.get('before_evidence'), ensure_ascii=False)[:700])}</code>\n"
-            f"이후: <code>{esc(json.dumps(operation.get('after_evidence'), ensure_ascii=False)[:900])}</code>\n\n"
+            f"이전: <code>{esc(redact_text(json.dumps(operation.get('before_evidence'), ensure_ascii=False))[:700])}</code>\n"
+            f"이후: <code>{esc(redact_text(json.dumps(operation.get('after_evidence'), ensure_ascii=False))[:900])}</code>\n\n"
             "<b>미확인</b>\n"
             + ("• 없음" if operation["state"] in {"SUCCEEDED", "FAILED"} else "• 작업 중단 시점의 외부 상태")
             + "\n\n<b>다음 행동</b>\n"
@@ -612,8 +688,16 @@ class ChiefBot:
             "/hub — Codex·Claude 공용 작업 기록과 잠금\n"
             "/git — 저장소별 최근 커밋\n"
             "/work — ~/work 최근 작업 폴더\n"
-            "/model — 현재 대화 모델\n\n"
-            "그 밖의 말은 대화로 답합니다. 작업 착수·중단·병합·Push·배포는 항상 버튼 승인을 거칩니다."
+            "/model — 현재 대화 모델\n"
+            "/jobs — 장시간 작업(렌더) 상태\n"
+            "/files 작업 — 결과물 받기(버튼)\n"
+            "/logs 작업 — 작업 로그 끝 30줄\n"
+            "/quiet 2h — 잠시 조용히(최대 12시간, /quiet off 해제)\n"
+            "/alerts on|off — 먼저 알리기 켜기(조용히도 해제)·끄기, /alerts 현재 설정\n"
+            "   off 여도 치명적인 알림(컨테이너 멈춤·디스크·메모리 부족)은 즉시, 아침 요약은 계속 옵니다\n"
+            "/brief — 아침 요약 미리 보기\n\n"
+            "그 밖의 말은 대화로 답합니다. 작업 착수·중단·병합·Push·배포는 항상 버튼 승인을 거칩니다.\n"
+            "작업·서버 상태가 바뀌면 먼저 알립니다(23:00–07:00 은 치명적인 것만, 나머지는 08:30 요약)."
         )
 
     def _hub_text(self) -> str:
@@ -675,8 +759,607 @@ class ChiefBot:
             f"마지막 응답: {esc(last_line)}"
         )
 
+    # ------------------------------------------------------------------ 감시기·알림
+
+    @property
+    def file_roots(self) -> tuple[Path, ...]:
+        """결과물·로그를 읽을 수 있는 허용 루트."""
+        return (self.paths.work, self.settings.state_dir / "evidence")
+
+    def _scan_jobs(self, now: datetime) -> list[JobObservation]:
+        return discover_jobs(self.jobs_config, self.paths.home, now.timestamp())
+
+    def observe(self, now: datetime) -> Observation:
+        """실제 서버 관측(읽기 전용, 고정 argv·짧은 타임아웃)."""
+        status = collect_host_status(self.alert_config.tmux_session)
+        docker = status["docker"]
+        containers = (
+            {str(item.get("name")): str(item.get("state") or "") for item in docker.get("containers") or []}
+            if docker.get("ok")
+            else None
+        )
+        tasks: dict[str, dict[str, Any]] = {}
+        for task in self.store.list_tasks(20):
+            info: dict[str, Any] = {"state": task["state"]}
+            if task["state"] == "BLOCKED":
+                run = self.store.latest_run(task["id"])
+                info["classification"] = ((run or {}).get("result") or {}).get("classification")
+            tasks[task["id"]] = info
+        return Observation(
+            at=now,
+            containers=containers,
+            disk_free=status["disk"]["free"],
+            disk_total=status["disk"]["total"],
+            mem_available=status["memory"].get("available"),
+            mem_total=status["memory"].get("total"),
+            tmux=status["remote_control"]["tmux_session"],
+            tasks=tasks,
+            jobs={job.key: job for job in self.job_scanner(now)},
+        )
+
+    def _maybe_watch(self) -> None:
+        current = time.monotonic()
+        if (
+            self.last_watch_monotonic is not None
+            and current - self.last_watch_monotonic < self.alert_config.interval_seconds
+        ):
+            return
+        self.last_watch_monotonic = current
+        try:
+            self.watch_tick()
+        except Exception as exc:  # 감시 실패가 폴링을 막지 않게 한다.
+            LOG.error("Watch tick failed: %s", type(exc).__name__)
+        try:
+            self.brief_tick()
+        except Exception as exc:
+            LOG.error("Morning brief failed: %s", type(exc).__name__)
+
+    def watch_tick(
+        self, now: datetime | None = None, observation: Observation | None = None
+    ) -> list[dict[str, Any]]:
+        """관측 1회 → 변화 감지 → 알림 규칙 → outbox. 처리한 알림 목록을 돌려준다(시뮬레이터용)."""
+        now = now or self.clock()
+        obs = observation if observation is not None else self.observer(now)
+        previous = self.alerts.get_state("observed")
+        busy = set(self.verification_futures) | set(self.release_futures)
+        events, state = detect(obs, previous, self.alert_config, busy_tasks=busy)
+        for job in obs.jobs.values():
+            self.alerts.upsert_job(job.key, job.path, job.label, job.status, now)
+        self.alerts.set_state("observed", state, now)
+        results = [self._dispatch_alert(event, now, obs) for event in events]
+        digest = self._flush_held_alerts(now)
+        if digest:
+            results.append(digest)
+        return results
+
+    def _dispatch_alert(self, event: AlertEvent, now: datetime, obs: Observation) -> dict[str, Any]:
+        prefs = self.alerts.prefs(self.alert_config.enabled)
+        status, reason = decide_delivery(
+            event,
+            now=now,
+            config=self.alert_config,
+            prefs=prefs,
+            last_same_key_at=self.alerts.last_key_time(event.key),
+            sent_last_hour=self.alerts.sent_since(now - timedelta(hours=1)),
+        )
+        alert_id = self.alerts.record(event, status=status, reason=reason, now=now)
+        result: dict[str, Any] = {
+            "id": alert_id,
+            "key": event.key,
+            "severity": event.severity,
+            "kind": event.kind,
+            "status": status,
+            "reason": reason,
+        }
+        if status != "SENT":
+            return result
+        job_id = None
+        has_deliverables = False
+        job_key = event.ref.get("job_key")
+        if job_key:
+            row = self.alerts.job_by_key(job_key)
+            job_id = row["id"] if row else None
+            job = obs.jobs.get(job_key)
+            has_deliverables = bool(job and job.has_deliverables)
+        rows = keyboard_rows(alert_id, job_id=job_id, has_deliverables=has_deliverables)
+        text = alert_text(event, now, self.alert_config)
+        self._notify(f"alert-{alert_id}", text, reply_markup=inline_keyboard(rows))
+        result["text"] = text
+        result["buttons"] = [data for row in rows for _, data in row]
+        return result
+
+    def _flush_held_alerts(self, now: datetime) -> dict[str, Any] | None:
+        """조용히(/quiet)·시간당 상한으로 보류된 알림을, 다시 보낼 수 있게 되면 한 건으로 묶어 보낸다.
+        조용한 시간·알림 끔으로 보류된 것은 아침 요약으로 간다."""
+        prefs = self.alerts.prefs(self.alert_config.enabled)
+        if not prefs.enabled or prefs.muted(now) or in_quiet_hours(now, self.alert_config):
+            return None
+        if self.alerts.sent_since(now - timedelta(hours=1)) >= self.alert_config.hourly_cap:
+            return None
+        reasons = ("muted", "cap") if self.alert_config.brief_enabled else ("muted", "cap", "quiet", "off")
+        held = self.alerts.list_alerts(statuses=("QUEUED",), reasons=reasons, limit=100)
+        if not held:
+            return None
+        held.reverse()
+        lines = [f"🔔 <b>보류됐던 알림 {len(held)}건</b>"]
+        lines += [self._alert_line(item) for item in held[:8]]
+        if len(held) > 8:
+            lines.append(f"… 외 {len(held) - 8}건")
+        event = AlertEvent(key=f"digest:{now.isoformat()}", severity="info", kind="digest", title="보류 알림 묶음")
+        digest_id = self.alerts.record(event, status="SENT", reason="digest", now=now)
+        self.alerts.mark([item["id"] for item in held], "DIGESTED")
+        self._notify(f"alert-{digest_id}", "\n".join(lines))
+        return {"id": digest_id, "key": event.key, "severity": "info", "kind": "digest", "status": "SENT",
+                "reason": "digest", "count": len(held)}
+
+    def _alert_line(self, item: dict[str, Any]) -> str:
+        stamp = self._local(item["created_at"]).strftime("%m-%d %H:%M")
+        body = f" · {esc(item['body'][:80])}" if item.get("body") else ""
+        return f"• {SEVERITY_ICONS.get(item['severity'], 'ℹ️')} {esc(stamp)} {esc(item['title'])}{body}"
+
+    def _local(self, value: str | datetime) -> datetime:
+        parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(self.alert_config.tz)
+
+    def brief_tick(self, now: datetime | None = None) -> bool:
+        """아침 요약을 날짜당 한 번 보낸다. 보냈으면 True."""
+        now = now or self.clock()
+        last = (self.alerts.get_state("brief") or {}).get("last_date")
+        date = brief_due(now, self.alert_config, last)
+        if date is None:
+            return False
+        text = self.brief_text(now)
+        self.alerts.set_state("brief", {"last_date": date}, now)
+        queued = self.alerts.list_alerts(statuses=("QUEUED",), limit=500)
+        self.alerts.mark([item["id"] for item in queued], "BRIEFED")
+        self._notify(f"brief-{date}", text)
+        return True
+
+    def brief_text(self, now: datetime) -> str:
+        """템플릿 요약(LLM 없음): 지난 24시간 알림, 장시간 작업, 봇 작업, 서버."""
+        local = now.astimezone(self.alert_config.tz)
+        since = now - timedelta(hours=24)
+        weekday = "월화수목금토일"[local.weekday()]
+        lines = [f"🌅 <b>아침 요약</b> · {local:%m/%d}({weekday}) {local:%H:%M}"]
+
+        recent = [
+            item
+            for item in self.alerts.list_alerts(statuses=("SENT", "QUEUED", "DIGESTED"), since=since, limit=60)
+            if item["kind"] != "digest"
+        ]
+        held = [item for item in recent if item["status"] == "QUEUED"]
+        lines.append(f"\n<b>지난 24시간 알림</b> {len(recent)}건 (보류됐던 것 {len(held)}건)")
+        shown = sorted(recent, key=lambda item: ({"critical": 0, "warn": 1}.get(item["severity"], 2), -item["id"]))
+        lines += [self._alert_line(item) + (" ⏸" if item["status"] == "QUEUED" else "") for item in shown[:8]]
+        if not recent:
+            lines.append("• 없음")
+        elif len(recent) > 8:
+            lines.append(f"… 외 {len(recent) - 8}건")
+
+        observed = self.alerts.get_state("observed") or {}
+        job_states = observed.get("jobs") or {}
+        counts: dict[str, int] = {}
+        for value in job_states.values():
+            counts[value.get("status")] = counts.get(value.get("status"), 0) + 1
+        lines.append("\n<b>장시간 작업</b>")
+        if counts:
+            lines.append(
+                "• "
+                + " · ".join(
+                    f"{STATUS_LABELS.get(name, name)} {count}"
+                    for name, count in sorted(counts.items(), key=lambda pair: str(pair[0]))
+                )
+            )
+            missing = sum(1 for value in job_states.values() if value.get("postprocess_missing"))
+            if missing:
+                lines.append(f"• ⚠️ 후처리 미완 {missing}건")
+        else:
+            lines.append("• 관측된 작업 없음")
+
+        lines.append("\n<b>봇 작업</b>")
+        active = self.store.list_tasks_in_states(ACTIVE_STATES)
+        changed = [task for task in self.store.list_tasks(10) if (task.get("updated_at") or "") >= since.isoformat(timespec="seconds")]
+        if active:
+            lines += [f"• 진행 중 <code>{esc(task['id'])}</code> {esc(task['state'])}" for task in active[:3]]
+        lines += [
+            f"• <code>{esc(task['id'])}</code> → {esc(task['state'])}"
+            for task in changed[:5]
+            if task["id"] not in {item["id"] for item in active}
+        ]
+        if not active and not changed:
+            lines.append("• 변화 없음")
+
+        host = observed.get("host") or {}
+        lines.append("\n<b>서버</b> (마지막 감시 기준)")
+        if host:
+            containers = host.get("containers")
+            container_text = (
+                ", ".join(f"{name} {'실행' if state == 'running' else state}" for name, state in containers.items())
+                if isinstance(containers, dict)
+                else "미확인"
+            )
+            tmux = {"active": "있음", "inactive": "없음"}.get(str(host.get("tmux")), "미확인")
+            lines.append(
+                f"• 디스크 여유 {esc(bytes_human(host.get('disk_free')))} · 메모리 여유 {esc(bytes_human(host.get('mem_available')))}"
+            )
+            lines.append(f"• 컨테이너: {esc(container_text)}")
+            lines.append(f"• Remote Control 세션: {tmux}")
+        else:
+            lines.append("• 아직 관측 없음")
+        prefs = self.alerts.prefs(self.alert_config.enabled)
+        if not prefs.enabled:
+            lines.append("\n🔕 알림이 꺼져 있습니다(/alerts on).")
+        return _fit("\n".join(lines))
+
+    # ------------------------------------------------------------------ 명령: /jobs /files /logs /quiet /alerts
+
+    def _current_jobs(self, now: datetime) -> list[JobObservation]:
+        jobs = self.job_scanner(now)
+        for job in jobs:
+            self.alerts.upsert_job(job.key, job.path, job.label, job.status, now)
+        return jobs
+
+    def _job_status_label(self, job: JobObservation) -> str:
+        label = STATUS_LABELS.get(job.status, job.status)
+        if job.postprocess_missing:
+            label += " · ⚠️ 후처리 미완"
+        return label
+
+    def _jobs_text(self) -> str:
+        now = self.clock()
+        jobs = self._current_jobs(now)[:10]
+        if not jobs:
+            return "감시 중인 장시간 작업이 없습니다(config/jobs.toml 패턴 + STARTED 마커)."
+        lines = ["<b>장시간 작업</b> (마커 기준, 최근 활동 순)"]
+        for job in jobs:
+            stamp = datetime.fromtimestamp(job.last_activity, UTC).astimezone(self.alert_config.tz)
+            extra = " · 결과물 있음" if job.has_deliverables else ""
+            lines.append(
+                f"{STATUS_ICONS.get(job.status, '•')} {esc(job.label)}\n"
+                f"   {esc(self._job_status_label(job))} · {stamp:%m-%d %H:%M}{extra}"
+            )
+        lines.append("\n결과물: <code>/files 이름</code> · 로그: <code>/logs 이름</code>")
+        return _fit("\n".join(lines))
+
+    def _resolve_job(self, hint: str, *, for_files: bool = False) -> tuple[JobObservation | None, int | None]:
+        now = self.clock()
+        jobs = self._current_jobs(now)
+        job = match_job(jobs, hint, prefer_deliverables=for_files)
+        if job is None:
+            return None, None
+        row = self.alerts.job_by_key(job.key)
+        return job, (row["id"] if row else None)
+
+    def _files_command(self, hint: str) -> None:
+        if not hint:
+            jobs = [job for job in self._current_jobs(self.clock()) if job.has_deliverables][:6]
+            if not jobs:
+                self._send("보낼 결과물이 있는 작업이 없습니다. /jobs 로 작업 상태를 볼 수 있습니다.")
+                return
+            if len(jobs) == 1:
+                row = self.alerts.job_by_key(jobs[0].key)
+                if row:
+                    self._send_deliverable_list(row["id"])
+                return
+            buttons = []
+            for job in jobs:
+                row = self.alerts.job_by_key(job.key)
+                if row:
+                    buttons.append([(_button_label(job.label), f"jf:{row['id']}")])
+            self._send("결과물을 받을 작업을 고르세요.", reply_markup=inline_keyboard(buttons))
+            return
+        job, job_id = self._resolve_job(hint, for_files=True)
+        if job is None or job_id is None:
+            self._send(f"작업을 찾지 못했습니다: <code>{esc(hint)}</code>\n/jobs 에서 이름을 확인해 주세요.")
+            return
+        self._send_deliverable_list(job_id)
+
+    def _send_deliverable_list(self, job_id: int) -> None:
+        row = self.alerts.get_job(job_id)
+        if row is None:
+            self._send("작업 기록을 찾지 못했습니다. /jobs 로 다시 확인해 주세요.")
+            return
+        job_dir, reason = resolve_allowed(row["path"], self.file_roots)
+        if job_dir is None or not job_dir.is_dir():
+            self._send(f"이 작업 폴더는 보낼 수 없습니다: {esc(reason or '폴더 아님')}")
+            return
+        checks = list_deliverables(
+            job_dir, self.jobs_config.deliverable_dirs, self.file_roots, self.jobs_config.max_deliverables
+        )
+        if not checks:
+            self._send(f"<b>{esc(row['label'])}</b>\n보낼 수 있는 결과물이 없습니다.")
+            return
+        now = self.clock()
+        buttons = []
+        oversize = []
+        icons = {"video": "🎬", "photo": "🖼", "document": "📄", "text": "📝"}
+        for check in checks:
+            assert check.path is not None
+            if check.too_large:
+                oversize.append(
+                    f"• {esc(check.path.name)} ({esc(bytes_human(check.size))}) — 50MB 초과, 경로만: "
+                    f"<code>{esc(home_relative(check.path, self.paths.home))}</code>"
+                )
+                continue
+            deliverable_id = self.alerts.upsert_deliverable(job_id, str(check.path), check.size, now)
+            label = f"{icons.get(check.kind, '📄')} {redact_text(check.path.name, 300)} · {bytes_human(check.size)}"
+            buttons.append([(_button_label(label), f"f:{deliverable_id}")])
+        text = f"<b>{esc(row['label'])}</b> 결과물 — 받을 파일을 누르세요."
+        if oversize:
+            text += "\n\n" + "\n".join(oversize)
+        self._send(_fit(text), reply_markup=inline_keyboard(buttons) if buttons else None)
+
+    def _deliver_file(self, deliverable_id: int) -> None:
+        row = self.alerts.get_deliverable(deliverable_id)
+        if row is None:
+            self._send("파일 기록을 찾지 못했습니다. /files 로 목록을 다시 띄워 주세요.")
+            return
+        check = check_deliverable(row["path"], self.file_roots)
+        shown = home_relative(Path(row["path"]), self.paths.home)
+        if check.too_large and check.path is not None:
+            self._send(
+                f"파일이 커서 보낼 수 없습니다({esc(bytes_human(check.size))}, 한도 50MB).\n"
+                f"경로: <code>{esc(home_relative(check.path, self.paths.home))}</code>"
+            )
+            return
+        if not check.ok or check.path is None:
+            self._send(f"보내지 않았습니다: {esc(check.reason)}")
+            self.store.add_event(None, None, "FILE_REFUSED", "files", {"path": shown, "reason": check.reason})
+            return
+        path = check.path
+        name = redact_text(path.name, 300)  # 이름 규칙이 놓친 키 모양 글자도 라벨·캡션·파일명에 내보내지 않는다
+        caption = redact_html(f"{esc(name)} · {esc(bytes_human(check.size))}", 1_024)
+        try:
+            # 검사한 바로 그 파일(st_dev/st_ino)만 O_NOFOLLOW 로 열어 그 fd 에서만 읽는다(검사~읽기 사이 바꿔치기 방지).
+            with open_checked(check, self.file_roots) as handle:
+                if check.kind == "text":
+                    text, truncated = read_redacted_text(path, handle=handle)
+                    content = b""
+                else:
+                    text, truncated = "", False
+                    content = handle.read(check.size + 1)
+                    if len(content) != check.size:
+                        raise OSError("file changed while reading")
+            if check.kind == "text":
+                if len(text) <= TEXT_INLINE_CHARS and not truncated:
+                    self._send(f"📝 <b>{esc(name)}</b> (마스킹됨)\n<pre>{esc(text) or '(빈 파일)'}</pre>")
+                else:
+                    self.telegram.send_file(
+                        self.settings.allowed_chat_id,
+                        "document",
+                        name,
+                        text.encode("utf-8"),
+                        caption=caption + " · 마스킹됨" + (" · 앞부분만" if truncated else ""),
+                    )
+            else:
+                try:
+                    self.telegram.send_file(
+                        self.settings.allowed_chat_id, check.kind, name, content, caption=caption
+                    )
+                except TelegramError:
+                    if check.kind != "photo":
+                        raise
+                    # 사진 규격 제한에 걸리면 원본 문서로 한 번 더 보낸다.
+                    self.telegram.send_file(
+                        self.settings.allowed_chat_id, "document", name, content, caption=caption
+                    )
+        except (TelegramError, OSError) as exc:
+            LOG.warning("File delivery failed: %s", redact_text(str(exc), 300))
+            self._send(f"⚠️ 파일 전송 실패: {esc(name)} · {esc(type(exc).__name__)}")
+            return
+        self.store.add_event(
+            None, None, "FILE_SENT", "files", {"path": shown, "size": check.size, "kind": check.kind}
+        )
+
+    def _logs_command(self, hint: str) -> None:
+        job, job_id = self._resolve_job(hint)
+        if job is None or job_id is None:
+            target = f": <code>{esc(hint)}</code>" if hint else ""
+            self._send(f"로그를 볼 작업을 찾지 못했습니다{target}\n/jobs 에서 이름을 확인해 주세요.")
+            return
+        self._send_logs(job_id)
+
+    def _send_logs(self, job_id: int) -> None:
+        row = self.alerts.get_job(job_id)
+        if row is None:
+            self._send("작업 기록을 찾지 못했습니다. /jobs 로 다시 확인해 주세요.")
+            return
+        job_dir, reason = resolve_allowed(row["path"], self.file_roots)
+        if job_dir is None or not job_dir.is_dir():
+            self._send(f"이 작업 로그는 읽을 수 없습니다: {esc(reason or '폴더 아님')}")
+            return
+        logs, refused = self._job_logs(job_dir)
+        for name, why in refused:
+            self._send(f"{esc(name)}: 읽지 않았습니다({esc(why)})")
+        if not logs:
+            if not refused:
+                self._send(f"<b>{esc(row['label'])}</b>\nrun.log·postprocess.log 가 없습니다.")
+            return
+        for log in logs:
+            safe = log
+            lines = clean_log_lines(tail_text(safe), 30)
+            body = "\n".join(lines).replace(str(self.paths.home), "~") or "(내용 없음)"
+            self._send(
+                _fit(f"📜 <b>{esc(log.name)}</b> · {esc(row['label'])} (끝 30줄, 마스킹됨)\n<pre>{esc(body)}</pre>")
+            )
+
+    def _job_logs(self, job_dir: Path) -> tuple[list[Path], list[tuple[str, str]]]:
+        """run.log 와 가장 최근 postprocess*.log. 심볼릭 링크·일반 파일 아님·허용 루트 밖은 건너뛴다.
+
+        (보여 줄 로그, [(이름, 거부 사유)]) — 끊어진 링크 하나 때문에 /logs 전체가 실패하지 않게 한다.
+        """
+        run_log: Path | None = None
+        post_logs: list[tuple[float, Path]] = []
+        refused: list[tuple[str, str]] = []
+        try:
+            candidates = sorted(job_dir.glob("*.log"))
+        except OSError:
+            candidates = []
+        for item in candidates:
+            if item.name != "run.log" and not item.name.startswith("postprocess"):
+                continue
+            try:
+                info = item.lstat()
+            except OSError:
+                continue
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                refused.append((item.name, "심볼릭 링크·일반 파일이 아닌 로그는 읽지 않습니다"))
+                continue
+            safe, why = resolve_allowed(item, self.file_roots)
+            if safe is None:
+                refused.append((item.name, why))
+                continue
+            if item.name == "run.log":
+                run_log = safe
+            else:
+                post_logs.append((info.st_mtime, safe))
+        post_logs.sort(key=lambda pair: pair[0], reverse=True)
+        logs = ([run_log] if run_log else []) + [path for _, path in post_logs[:1]]
+        return logs, refused
+
+    def _quiet_command(self, argument: str) -> None:
+        now = self.clock()
+        prefs = self.alerts.prefs(self.alert_config.enabled)
+        arg = (argument or "").strip().lower()
+        if arg in {"off", "해제", "끝", "0"}:
+            self.alerts.set_prefs(AlertPrefs(enabled=prefs.enabled, muted_until=None), now)
+            self._send(self._prefs_result_text(now))
+            return
+        if not arg:
+            self._send(
+                "얼마나 조용히 할지 적어 주세요.\n예: <code>/quiet 2h</code>, <code>/quiet 30m</code> (최대 12시간), "
+                "해제는 <code>/quiet off</code>"
+            )
+            return
+        seconds = parse_duration(arg)
+        if seconds is None:
+            self._send("기간을 이해하지 못했습니다. 예: <code>/quiet 2h</code>, <code>/quiet 30m</code>")
+            return
+        if seconds > MAX_QUIET_SECONDS:
+            self._send("조용히는 최대 12시간까지입니다. 예: <code>/quiet 12h</code>")
+            return
+        self._mute(seconds, now)
+
+    def _mute(self, seconds: int, now: datetime) -> None:
+        prefs = self.alerts.prefs(self.alert_config.enabled)
+        until = now + timedelta(seconds=seconds)
+        self.alerts.set_prefs(AlertPrefs(enabled=prefs.enabled, muted_until=until), now)
+        saved = self.alerts.prefs(self.alert_config.enabled)  # 저장된 값을 다시 읽어 그대로 알린다
+        if not saved.muted(now):
+            self._send(self._prefs_result_text(now))
+            return
+        self._send(
+            f"🔕 {format_duration(seconds)} 조용히 합니다({saved.muted_until.astimezone(self.alert_config.tz):%H:%M} 까지).\n"
+            "치명적인 알림(컨테이너 멈춤·디스크·메모리 부족)은 그대로 보냅니다."
+        )
+
+    def _prefs_result_text(self, now: datetime) -> str:
+        """알림 설정을 바꾼 뒤 DB 에서 다시 읽은 실제 상태로 답한다(모델·명령 문구가 아니라 저장된 값 기준)."""
+        prefs = self.alerts.prefs(self.alert_config.enabled)
+        head = "🔔 먼저 알리기: 켜짐" if prefs.enabled else "🔕 먼저 알리기: 꺼짐(치명적인 알림만 즉시, 나머지는 아침 요약)"
+        if prefs.muted(now):
+            quiet = f"조용히: {prefs.muted_until.astimezone(self.alert_config.tz):%m-%d %H:%M} 까지(치명적인 알림은 그대로)"
+        else:
+            quiet = "조용히: 꺼짐"
+        return f"{head}\n{quiet}"
+
+    def _alerts_command(self, argument: str) -> None:
+        now = self.clock()
+        arg = (argument or "").strip().lower()
+        prefs = self.alerts.prefs(self.alert_config.enabled)
+        if arg in {"on", "켜", "켜기"}:
+            # 켜기는 '다시 알림을 받겠다'는 뜻이라 조용히 모드도 함께 푼다.
+            self.alerts.set_prefs(AlertPrefs(enabled=True, muted_until=None), now)
+            self._send(self._prefs_result_text(now))
+            return
+        if arg in {"off", "꺼", "끄기"}:
+            self.alerts.set_prefs(AlertPrefs(enabled=False, muted_until=prefs.muted_until), now)
+            self._send(self._prefs_result_text(now))
+            return
+        if arg and arg not in {"status", "상태"}:
+            self._send(
+                "사용법: <code>/alerts</code> 설정 보기 · <code>/alerts on</code>(켜기 + 조용히 해제) · "
+                "<code>/alerts off</code>(치명적인 것만)"
+            )
+            return
+        cfg = self.alert_config
+        muted = (
+            f"{prefs.muted_until.astimezone(cfg.tz):%m-%d %H:%M} 까지 조용히" if prefs.muted(now) else "아님"
+        )
+        recent = self.alerts.list_alerts(statuses=("SENT", "QUEUED"), limit=5)
+        held = len(self.alerts.list_alerts(statuses=("QUEUED",), limit=500))
+        lines = [
+            "<b>알림 설정</b>",
+            f"먼저 알리기: {'켜짐' if prefs.enabled else '꺼짐(치명적인 것만)'}",
+            f"조용히: {esc(muted)}",
+            f"조용한 시간: {esc(cfg.quiet_start)}–{esc(cfg.quiet_end)} ({esc(cfg.timezone)}, 치명적인 것만 즉시)",
+            f"아침 요약: {esc(cfg.brief_time) if cfg.brief_enabled else '꺼짐'} · 시간당 상한 {cfg.hourly_cap}건",
+            f"보류 중: {held}건",
+            "\n<b>최근 알림</b>",
+        ]
+        lines += [self._alert_line(item) for item in recent] or ["• 없음"]
+        self._send(_fit("\n".join(lines)))
+
+    # ------------------------------------------------------------------ 알림 버튼
+
+    def _watch_callback(self, data: str) -> None:
+        """al:<알림> jf:<작업> jl:<작업> f:<결과물> q:<분>. 행 번호만 받고 경로는 받지 않는다."""
+        match = CALLBACK_RE.fullmatch(data)
+        if not match:
+            self._send("알 수 없거나 만료된 버튼입니다.")
+            return
+        kind, number = match.group(1), int(match.group(2))
+        if kind == "al":
+            self._send(self._alert_detail_text(number))
+        elif kind == "jf":
+            self._send_deliverable_list(number)
+        elif kind == "jl":
+            self._send_logs(number)
+        elif kind == "f":
+            self._deliver_file(number)
+        elif kind == "q":
+            if not 1 <= number <= MAX_QUIET_SECONDS // 60:
+                self._send("조용히는 최대 12시간까지입니다.")
+                return
+            self._mute(number * 60, self.clock())
+
+    def _alert_detail_text(self, alert_id: int) -> str:
+        alert = self.alerts.get_alert(alert_id)
+        if alert is None:
+            return "알림 기록을 찾지 못했습니다."
+        ref = alert.get("ref") or {}
+        if ref.get("task_id"):
+            return self._task_text(str(ref["task_id"]))
+        stamp = self._local(alert["created_at"]).strftime("%m-%d %H:%M")
+        lines = [
+            f"{SEVERITY_ICONS.get(alert['severity'], 'ℹ️')} <b>{esc(alert['title'])}</b>",
+            f"관측: {esc(stamp)} · 등급 {esc(alert['severity'])}",
+        ]
+        if alert.get("body"):
+            lines.append(esc(alert["body"]))
+        job_key = ref.get("job_key")
+        if job_key:
+            row = self.alerts.job_by_key(str(job_key))
+            current = next((job for job in self.job_scanner(self.clock()) if job.key == job_key), None)
+            if current is not None:
+                last = datetime.fromtimestamp(current.last_activity, UTC).astimezone(self.alert_config.tz)
+                lines += [
+                    f"\n현재 상태: {esc(self._job_status_label(current))}",
+                    f"마커: {esc(', '.join(current.markers))}",
+                    f"마지막 활동: {last:%m-%d %H:%M}",
+                    f"결과물: {'있음' if current.has_deliverables else '없음'}",
+                ]
+            elif row:
+                lines.append(f"\n마지막 기록 상태: {esc(STATUS_LABELS.get(row['status'], row['status']))}")
+            if row:
+                lines.append(f"경로: <code>{esc(home_relative(Path(row['path']), self.paths.home))}</code>")
+            lines.append("\n<b>미확인</b>\n• 마커·로그 시각만 본 추정입니다(프로세스 생존은 확인하지 않음)")
+        return _fit("\n".join(lines))
+
     def _send(self, text: str, *, reply_markup: dict[str, Any] | None = None) -> dict[str, Any] | None:
-        text = redact_text(text, 4_096)
+        text = redact_html(text, 4_096)
         try:
             return self.telegram.send_message(
                 self.settings.allowed_chat_id,
@@ -706,6 +1389,7 @@ class ChiefBot:
         *,
         reply_markup: dict[str, Any] | None = None,
     ) -> None:
+        text = redact_html(text, 4_096)
         task = self.store.get_task(task_id)
         message_id = task.get("telegram_message_id")
         response: dict[str, Any] | None = None
@@ -728,13 +1412,17 @@ class ChiefBot:
                 self.store.set_task_fields(task_id, telegram_message_id=response["message_id"])
         self.last_card_update[task_id] = time.monotonic()
 
-    def _notify(self, dedupe_key: str, text: str) -> None:
-        text = redact_text(text, 4_096)
+    def _notify(self, dedupe_key: str, text: str, *, reply_markup: dict[str, Any] | None = None) -> None:
+        text = redact_html(text, 4_096)
+        payload: dict[str, Any] = {"chat_id": self.settings.allowed_chat_id, "text": text, "parse_mode": "HTML"}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+            payload["disable_web_page_preview"] = True
         self.store.queue_outbox(
             dedupe_key=dedupe_key,
             chat_id=self.settings.allowed_chat_id,
             method="sendMessage",
-            payload={"chat_id": self.settings.allowed_chat_id, "text": text, "parse_mode": "HTML"},
+            payload=payload,
         )
         self._flush_outbox()
 
@@ -743,13 +1431,36 @@ class ChiefBot:
             try:
                 self.telegram.call_with_retry(item["method"], item["payload"], attempts=1)
             except TelegramError as exc:
-                self.store.update_outbox(
+                state = self.store.update_outbox(
                     item["id"],
                     success=False,
                     retry_after_seconds=min(exc.retry_after or 10, 300),
+                    permanent=exc.permanent,
                 )
+                if state == "FAILED":
+                    LOG.error(
+                        "Outbox item %s dropped after %s attempts: %s",
+                        item["id"],
+                        int(item.get("attempts") or 0) + 1,
+                        redact_text(str(exc), 300),
+                    )
             else:
                 self.store.update_outbox(item["id"], success=True)
+
+
+# 승인 없이 바로 처리되는 대화 동작과, 모델이 승인이 필요한 것처럼 말했을 때 대신 쓸 문장
+IMMEDIATE_INTENTS = {"alerts", "quiet", "files"}
+IMMEDIATE_REPLIES = {
+    "alerts": "알림 설정을 바로 적용합니다. 실제 저장된 설정은 아래와 같습니다.",
+    "quiet": "알림 설정을 바로 적용합니다. 실제 저장된 설정은 아래와 같습니다.",
+    "files": "결과물 목록을 띄웁니다. 받을 파일 버튼을 누르면 그 파일이 갑니다.",
+}
+APPROVAL_CLAIM_RE = re.compile(r"승인|카드")
+CALLBACK_RE = re.compile(r"(al|jf|jl|f|q):(\d{1,9})")
+
+
+def _button_label(text: str, limit: int = 48) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _fit(text: str, limit: int = 4_000) -> str:

@@ -266,7 +266,7 @@ def run(args: argparse.Namespace) -> int:
             "actual_model": response.get("model"),
             "usage": response.get("usage"),
             "result": response_text if success else "",
-            "error": "" if success else combined_error[:4_000],
+            "error": "" if success else redact_text(combined_error, len(combined_error) + 1)[:4_000],
             "duration_seconds": round(time.monotonic() - started, 2),
             "ended_at": now(),
         }

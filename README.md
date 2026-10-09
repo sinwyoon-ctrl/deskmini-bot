@@ -62,7 +62,59 @@ sudo loginctl enable-linger ionenet
 - `/work`: `~/work` 아래 최근 수정된 프로젝트 폴더
 - `/model`: 지금 쓰는 대화 모델(키 값은 표시하지 않음)
 
+- `/jobs`: 장시간 작업(렌더 폴더) 상태 — 마커 기준
+- `/files [작업]`: 작업 결과물 목록 버튼(인자 없으면 결과물 있는 최근 작업들), 버튼을 누르면 전송
+- `/logs [작업]`: `run.log`·`postprocess*.log` 끝 30줄(ANSI·진행 막대 제거, 마스킹)
+- `/quiet 2h` (`30m`, `1h30m`, `90분`, 최대 12시간) · `/quiet off`: 잠시 조용히
+- `/alerts`: 알림 설정·최근 알림 · `/alerts on|off` (on 은 조용히도 해제, off 여도 치명적인 알림·아침 요약은 옴)
+- `/brief`: 아침 요약 미리 보기
+
 `/new`, `/task`, `/stop` 을 인자 없이 보내면 사용법을 답한다. 슬래시 명령은 LLM을 부르지 않는다.
+
+## 먼저 알리기(감시기)
+
+`app/watch.py` 가 메인 루프에서 `config/alerts.toml` 의 `interval_seconds`(기본 60초)마다 한 번 관측한다.
+관측은 읽기 전용이다: `docker ps`·`tmux has-session`(고정 argv, 짧은 타임아웃), `/proc/meminfo`, 디스크 사용량,
+봇 DB, `~/work` 마커 파일. 처음 관측은 기준선으로만 저장하고(`watch_state`), 이후 바뀐 것만 알린다.
+
+| 대상 | 알림 | 등급 |
+|---|---|---|
+| 컨테이너 portainer·deskmini 실행↔멈춤 | 멈춤 / 다시 실행 | critical / info |
+| 디스크 여유 10% 미만 또는 20GB 미만 | 부족 / 회복 | critical / info |
+| 메모리 사용 가능 10% 미만 3회 연속 | 부족 / 회복 | critical / info |
+| Remote Control tmux 세션(rc) | 사라짐 / 다시 있음 | warn / info |
+| 봇 작업 READY·FAILED·BLOCKED(한도 차단 구분)·INTERRUPTED | 전이 | info / warn |
+| 장시간 작업 | 시작·멈춤 의심·렌더 완료·후처리 완료·실패·후처리 미완 | info / warn |
+
+봇이 이미 보낸 검증 결과(병합 승인 카드·실패 카드)는 감시기가 다시 보내지 않는다.
+
+장시간 작업은 `config/jobs.toml` 의 패턴(기본 `~/work/*/render/*`, `~/work/*/revisions/*/render/*`) 아래
+`STARTED` 마커가 있는 폴더다. `FAILED` → 실패, `POSTPROCESS_COMPLETE` → 후처리까지 완료, `COMPLETE` → 렌더 완료,
+`STARTED` 만 있으면 로그가 `stalled_minutes`(기본 30분) 안에 갱신됐는지로 진행 중/멈춤 의심. `COMPLETE` 인데
+`POSTPROCESS_COMPLETE` 가 없고 `postprocess*.log` 가 멈춰 있으면 "후처리 미완" 경고. 프로세스 생존은 보지 않는다.
+
+알림 규칙(`app/alerts.py`): 같은 키는 `dedupe_minutes`(60분) 안에 다시 보내지 않고(봇 작업은 7일),
+critical 은 항상 즉시 보낸다. 그 외는 `/alerts off`·`/quiet`·조용한 시간(23:00–07:00 Asia/Seoul)·시간당 상한
+(`hourly_cap`, 8건)에 걸리면 보류한다. 조용한 시간·끔으로 보류된 것은 08:30 아침 요약에, `/quiet`·상한으로
+보류된 것은 풀리는 대로 한 건으로 묶어 보낸다. 알림은 outbox 를 거쳐 실패하면 재시도한다(Telegram 400 은 즉시, 그 밖은 20번 실패하면 FAILED 로 멈추고 로그에 남긴다).
+알림 버튼: [자세히] [결과물 받기] [로그 보기] [1시간 조용히]. 버튼 데이터는 DB 행 번호(`al:12`, `jf:3`, `jl:3`,
+`f:7`, `q:60`)만 싣고 경로는 싣지 않는다. 버튼도 등록된 개인 채팅·사용자만 처리한다.
+
+아침 요약은 매일 `brief_time`(08:30) 에 한 번(날짜별 중복 방지, 놓치면 4시간 안에서만), 템플릿으로 만든다:
+지난 24시간 알림(보류분 표시), 장시간 작업 상태 수, 봇 작업 변화, 마지막 감시 기준 서버 상태.
+
+## 결과물 받기
+
+`/files`, 알림의 [결과물 받기], 자연어("영상 보내줘" → 대화 동작 `send_files`)는 결과물 목록 버튼만 띄우고,
+파일은 버튼을 눌러야 간다. 결과물 = 작업 폴더의 `deliverable_dirs`(`web*`, `out*`, `final*`, `export*`) 하위 파일과
+작업 폴더 바로 아래 파일(`frames/`·`layer/` 같은 중간 산출물 제외). 경로 규칙은 `app/files.py`:
+
+- 허용 루트: `~/work`, 봇 state 의 `evidence/` 만. 절대 경로만, `..` 거부, `resolve()` 후 루트 포함 여부 확인(심볼릭 링크 탈출 차단)
+- 숨김 파일·폴더, 비밀처럼 보이는 이름(env, secret, token, key, credential, password, id_rsa, .pem 등) 거부
+- 확장자 허용 목록: mp4 webm mov jpg jpeg png gif webp pdf txt md json csv log
+- 50MB 초과는 보내지 않고 크기와 경로만 알린다. 전송 직전에 같은 검사를 다시 한다
+- txt·md·json·csv·log 는 마스킹한 본문으로 보낸다(짧으면 메시지, 길면 마스킹된 내용을 문서로 업로드)
+- mp4 → sendVideo, jpg·png·webp(10MB 이하) → sendPhoto, 그 외 → sendDocument. 표준 라이브러리 multipart 업로드
 
 ## 대화 응답층
 
@@ -74,9 +126,10 @@ sudo loginctl enable-linger ionenet
 - 최근 대화 10턴(`chat_messages` 테이블, 마스킹 저장, 200행 유지)
 
 모델은 JSON `{reply, action}` 을 돌려준다. `reply` 는 HTML 이스케이프·마스킹 후 보내고, `action`
-(create_task / stop_task / task_detail / merge / push / deploy)은 `Policy.from_chat_action` 이 검사해
+(create_task / stop_task / task_detail / merge / push / deploy / send_files / set_alerts)은 `Policy.from_chat_action` 이 검사해
 기존 경로로 보낸다. 작업 발주는 🚀 착수 버튼 카드, 중단은 중단 버튼, 병합·push·배포는 승인 카드가 뜰 뿐
-모델 응답만으로 실행되지 않는다. 매 응답의 제공자·모델·제안 동작·지연·토큰 사용량은 `events` 에
+모델 응답만으로 실행되지 않는다. `send_files`(작업 힌트)는 결과물 목록 버튼, `set_alerts`(on/off/기간)는 알림 설정으로
+가며 둘 다 읽기 전용·되돌릴 수 있는 동작이라 승인 카드가 없다. 스냅샷에는 `jobs_recent`(장시간 작업 상태)와 `alerts`(설정)가 들어간다. 매 응답의 제공자·모델·제안 동작·지연·토큰 사용량은 `events` 에
 `CHAT_DECISION` 으로, 전부 실패하면 `CHAT_UNAVAILABLE` 로 남는다. 두 제공자가 모두 실패하면 고정 명령
 안내를 보낸다. 설정은 `config/models.toml` 의 `[chat]`(제공자 순서·모델·effort)과 `[gemini]`(모델 사다리 또는 고정 모델).
 

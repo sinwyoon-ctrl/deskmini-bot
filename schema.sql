@@ -121,3 +121,45 @@ CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id);
 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, id);
 CREATE INDEX IF NOT EXISTS idx_outbox_state ON outbox(state, next_attempt_at);
+
+-- 감시기(먼저 알리기)·결과물 전송. 모두 추가 테이블이며 기존 테이블은 바꾸지 않는다.
+CREATE TABLE IF NOT EXISTS watch_state (
+    name TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dedupe_key TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK (severity IN ('critical', 'warn', 'info')),
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    ref_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL,
+    reason TEXT,
+    created_at TEXT NOT NULL,
+    sent_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_key TEXT NOT NULL UNIQUE,
+    path TEXT NOT NULL,
+    label TEXT NOT NULL,
+    status TEXT,
+    first_seen_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS deliverables (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER REFERENCES jobs(id),
+    path TEXT NOT NULL UNIQUE,
+    size INTEGER,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_key ON alerts(dedupe_key, id);
+CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, created_at);

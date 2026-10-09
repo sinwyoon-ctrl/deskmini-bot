@@ -1,0 +1,22 @@
+# 감시기·알림·아침 요약. 감시와 전송은 읽기 전용이다(서버·컨테이너·VM 을 바꾸지 않는다).
+[watch]
+interval_seconds = 60          # 메인 루프에서 감시 주기(최소 간격)
+containers = ["portainer", "deskmini"]
+tmux_session = "rc"
+disk_free_percent = 10.0       # 이 비율 미만이거나
+disk_free_gb = 20.0            # 이 용량 미만이면 디스크 부족(critical)
+memory_available_percent = 10.0
+memory_consecutive = 3         # 연속 이 횟수만큼 부족해야 알림(critical)
+
+[alerts]
+enabled = true                 # 초기값. 실행 중에는 /alerts on|off 가 DB 에 저장된 값이 우선
+timezone = "Asia/Seoul"
+quiet_start = "23:00"          # 조용한 시간: critical 만 즉시, 나머지는 아침 요약으로
+quiet_end = "07:00"
+dedupe_minutes = 60            # 같은 알림 키는 이 시간 안에 다시 보내지 않음
+hourly_cap = 8                 # 1시간에 보내는 일반 알림 상한(critical 제외, 넘치면 보류)
+
+[brief]
+brief_enabled = true
+brief_time = "08:30"           # 매일 한 번(현지 시각), 놓치면 brief_window_hours 안에서만 보냄
+brief_window_hours = 4

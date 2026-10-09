@@ -28,3 +28,17 @@ cd ~/deskmini-bot
   (사용자 입력을 그대로 되받은 경우만 flag), 장황 기준 5줄·300자 초과로 강화(S09·O06·F06·F07 은 목록 요청이라 예외),
   되묻기 선택지 3개 이상·"참고로" 덧붙임은 flag, 미등록 프로젝트 create_task 가 정책을 통과하면 실패.
   합성 게이트에 create_task:unregistered 추가. 수정 전 결과는 `out/*_v1.jsonl`·`out/report_v1.md` 에 보존.
+
+## 300건 검증 (먼저 알리기 + 결과물 주고받기, 2026-10-09)
+
+```bash
+.venv/bin/python sim/gen_cases_v2.py && .venv/bin/python sim/gen_events.py   # 케이스 재생성(선택)
+.venv/bin/python sim/run_sim_300.py events            # 이벤트 100건, LLM 없음 → out/results_events.jsonl
+.venv/bin/python sim/run_sim_300.py v2 --mode nollm   # 대화 v2 라우팅·합성 최악 동작 → out/results_v2_nollm.jsonl
+.venv/bin/python sim/run_sim_300.py v2 --mode claude  # 대화 v2 claude CLI → out/results_v2.jsonl
+.venv/bin/python sim/run_sim.py --out-suffix v1_300   # 대화 v1 재실행 → out/results_v1_300.jsonl
+.venv/bin/python sim/run_sim_300.py report            # out/report_300.md (+ out/bugs_300.md 포함)
+.venv/bin/python -m unittest sim/test_repro_300.py    # 찾은 결함 최소 재현(고치기 전에는 실패가 정상)
+```
+- `harness300.py`: 가짜 홈·작업 폴더 픽스처, 기록용 FakeTG(answer_callback 허용, send_file 기록), Telegram `_post` 차단,
+  비밀값 누출은 봇 정규식이 아니라 심어 둔 고유 조각으로 독립 판정, Telegram HTML 태그 형식 점검.

@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
 from app.collector import bytes_human, collect_host_status, run_fixed
+from app.jobs import STATUS_LABELS, JobsConfig, discover_jobs
 from app.redact import redact_text
+
+# 서버 시계는 UTC 다. 사용자에게 보이는 시각은 알림 설정과 같은 한국 시간으로 맞춘다.
+DISPLAY_TZ = ZoneInfo("Asia/Seoul")
 
 
 ACTIVE_STATES = (
@@ -19,6 +24,7 @@ ACTIVE_STATES = (
     "STOPPING",
 )
 SNAPSHOT_LIMIT = 7_000
+JOBS_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "jobs.toml"
 
 
 @dataclass(frozen=True)
@@ -46,16 +52,17 @@ def _mtime(path: Path) -> str:
     stamp = _stamp(path)
     if not stamp:
         return "?"
-    return datetime.fromtimestamp(stamp, UTC).astimezone().strftime("%m-%d %H:%M")
+    return datetime.fromtimestamp(stamp, UTC).astimezone(DISPLAY_TZ).strftime("%m-%d %H:%M")
 
 
 def _read(path: Path, limit: int) -> str:
     try:
         with path.open(encoding="utf-8", errors="replace") as handle:
-            text = handle.read(limit + 1)
+            # 끝에 걸친 토큰이 잘린 채 남지 않게 조금 더 읽어 마스킹한 뒤 자른다.
+            text = handle.read(limit + 512)
     except OSError:
         return ""
-    text = redact_text(text.strip(), limit + 1)
+    text = redact_text(text.strip(), limit + 513)
     return text if len(text) <= limit else text[:limit].rstrip() + " …"
 
 
@@ -113,9 +120,9 @@ def repo_summary(path: Path, commits: int = 3) -> dict[str, Any]:
     )
     return {
         "ok": log.ok,
-        "commits": [line[:120] for line in log.stdout.splitlines()[:commits]] if log.ok else [],
+        "commits": [redact_text(line, len(line) + 1)[:120] for line in log.stdout.splitlines()[:commits]] if log.ok else [],
         "uncommitted": len(status.stdout.splitlines()) if status.ok else None,
-        "error": None if log.ok else log.stdout[:200],
+        "error": None if log.ok else redact_text(log.stdout, len(log.stdout) + 1)[:200],
     }
 
 
@@ -192,8 +199,78 @@ def build_snapshot(
         name: repo_summary(path) for name, path in registered_repos(paths)
     }
     sections["work_dirs_recent"] = recent_work_dirs(paths)
+    sections["jobs_recent"] = jobs_summary(paths)
+    sections["alerts"] = alerts_summary(store)
+    sections["alerts_recent"] = recent_alerts(store)
     text = json.dumps(sections, ensure_ascii=False, separators=(",", ":"), default=str)
     return redact_text(text, SNAPSHOT_LIMIT)
+
+
+def jobs_summary(paths: WorkspacePaths, count: int = 6) -> list[dict[str, Any]]:
+    """장시간 작업(렌더 폴더) 최근 상태. 마커 파일로만 추정한 값이다."""
+    try:
+        jobs = discover_jobs(JobsConfig.load(JOBS_CONFIG_PATH), paths.home)
+    except Exception:
+        return []
+    items = []
+    for job in jobs[:count]:
+        status = STATUS_LABELS.get(job.status, job.status)
+        if job.postprocess_missing:
+            status += "(후처리 미완)"
+        items.append(
+            {
+                "job": job.label,
+                "status": status,
+                "deliverables": job.has_deliverables,
+                "last_activity": datetime.fromtimestamp(job.last_activity, UTC).astimezone(DISPLAY_TZ).strftime("%m-%d %H:%M"),
+            }
+        )
+    return items
+
+
+def alerts_summary(store: Any) -> dict[str, Any]:
+    try:
+        from app.alerts import AlertStore
+
+        prefs = AlertStore(store).prefs()
+    except Exception:
+        return {}
+    return {
+        "enabled": prefs.enabled,
+        "muted_until": prefs.muted_until.isoformat(timespec="minutes") if prefs.muted_until else None,
+    }
+
+
+def recent_alerts(store: Any, count: int = 5) -> list[dict[str, str]]:
+    """봇이 최근 기록한 알림(새것부터). 시각·등급·짧은 내용·상태(SENT 보냄, QUEUED 보류 등). 마스킹 후 짧게."""
+    try:
+        from app.alerts import AlertStore
+
+        rows = AlertStore(store).list_alerts(statuses=("SENT", "QUEUED", "DIGESTED", "BRIEFED"), limit=count)
+    except Exception:
+        return []
+    items = []
+    for row in rows:
+        try:
+            stamp = datetime.fromisoformat(str(row["created_at"]))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=UTC)
+            when = stamp.astimezone(DISPLAY_TZ).strftime("%m-%d %H:%M")
+        except (TypeError, ValueError):
+            when = "?"
+        text = str(row.get("title") or "")
+        if row.get("body"):
+            text += " — " + str(row["body"])
+        text = " ".join(redact_text(text, len(text) + 1).split())
+        items.append(
+            {
+                "at": when,
+                "severity": str(row.get("severity") or ""),
+                "text": text if len(text) <= 120 else text[:120].rstrip() + " …",
+                "status": str(row.get("status") or ""),
+            }
+        )
+    return items
 
 
 def home_relative(path: Path, home: Path | None = None) -> str:

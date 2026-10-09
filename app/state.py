@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from app.ids import canonical_task_id
-from app.redact import redact, redact_text
+from app.redact import redact, redact_html, redact_text
 
 
 TASK_STATES = {
@@ -28,6 +28,17 @@ TASK_STATES = {
     "STOPPING",
     "CANCELLED",
 }
+
+
+OUTBOX_MAX_ATTEMPTS = 20
+
+
+def _redact_outbox(payload: dict[str, Any]) -> Any:
+    """HTML 본문은 HTML 안전 마스킹(원시 '<redacted>' 태그를 만들지 않음), 나머지는 일반 마스킹."""
+    safe = redact(payload)
+    if isinstance(payload, dict) and payload.get("parse_mode") == "HTML" and isinstance(payload.get("text"), str):
+        safe["text"] = redact_html(payload["text"], 4_096)
+    return safe
 
 
 def utc_now() -> str:
@@ -630,7 +641,7 @@ class StateStore:
                     dedupe_key, chat_id, method, payload_json, state, next_attempt_at, created_at
                 ) VALUES (?, ?, ?, ?, 'PENDING', ?, ?)
                 """,
-                (dedupe_key, chat_id, method, json.dumps(redact(payload), ensure_ascii=False), utc_now(), utc_now()),
+                (dedupe_key, chat_id, method, json.dumps(_redact_outbox(payload), ensure_ascii=False), utc_now(), utc_now()),
             )
 
     def pending_outbox(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -650,8 +661,20 @@ class StateStore:
             result.append(item)
         return result
 
-    def update_outbox(self, item_id: int, *, success: bool, retry_after_seconds: int = 10) -> None:
+    def update_outbox(
+        self, item_id: int, *, success: bool, retry_after_seconds: int = 10, permanent: bool = False
+    ) -> str:
+        """결과 상태를 돌려준다. 영구 오류(400)이거나 OUTBOX_MAX_ATTEMPTS 번 실패하면 FAILED 로 멈춘다."""
         with self.connect() as connection:
+            if not success:
+                row = connection.execute("SELECT attempts FROM outbox WHERE id=?", (item_id,)).fetchone()
+                attempts = (row["attempts"] if row else 0) + 1
+                if permanent or attempts >= OUTBOX_MAX_ATTEMPTS:
+                    connection.execute(
+                        "UPDATE outbox SET state='FAILED', attempts=?, next_attempt_at=NULL WHERE id=?",
+                        (attempts, item_id),
+                    )
+                    return "FAILED"
             if success:
                 connection.execute(
                     "UPDATE outbox SET state='SENT', sent_at=?, attempts=attempts+1 WHERE id=?",
@@ -665,6 +688,7 @@ class StateStore:
                     "UPDATE outbox SET attempts=attempts+1, next_attempt_at=? WHERE id=?",
                     (next_attempt, item_id),
                 )
+        return "SENT" if success else "PENDING"
 
     def recent_events(self, task_id: str, limit: int = 8) -> list[dict[str, Any]]:
         with self.connect() as connection:

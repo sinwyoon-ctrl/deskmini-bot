@@ -128,7 +128,7 @@ def _docker_containers() -> dict[str, Any]:
     }
 
 
-def collect_host_status() -> dict[str, Any]:
+def collect_host_status(tmux_session: str = "rc") -> dict[str, Any]:
     observed_at = datetime.now(UTC).isoformat(timespec="seconds")
     memory = _meminfo()
     usage = shutil.disk_usage("/")
@@ -136,7 +136,7 @@ def collect_host_status() -> dict[str, Any]:
         load = os.getloadavg()
     except OSError:
         load = ()
-    tmux = run_fixed(("tmux", "has-session", "-t", "rc"), timeout=1.0)
+    tmux = run_fixed(("tmux", "has-session", "-t", tmux_session), timeout=1.0)
     return {
         "observed_at": observed_at,
         "hostname": os.uname().nodename if hasattr(os, "uname") else "unknown",

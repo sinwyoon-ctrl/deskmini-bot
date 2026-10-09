@@ -1,0 +1,14 @@
+# 장시간 작업(jobs) 감시. 작업 = 아래 패턴에 맞고 STARTED 마커가 있는 폴더.
+# 상태: STARTED 만 → 진행 중(로그가 stalled_minutes 안에 갱신) / 멈춤 의심(그 이상 무변화)
+#       COMPLETE → 렌더 완료, POSTPROCESS_COMPLETE → 후처리까지 완료, FAILED → 실패
+#       COMPLETE 인데 POSTPROCESS_COMPLETE 없고 postprocess*.log 가 stalled_minutes 이상 멈춤 → 후처리 미완 경고
+[jobs]
+patterns = [
+  "~/work/*/render/*",
+  "~/work/*/revisions/*/render/*",
+]
+stalled_minutes = 30
+# 결과물로 보여 줄 하위 폴더(작업 폴더 바로 아래 파일도 포함). frames/ layer/ 같은 중간 산출물은 제외된다.
+deliverable_dirs = ["web*", "out*", "final*", "export*", "deliverable*"]
+max_jobs = 200
+max_deliverables = 12

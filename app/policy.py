@@ -17,7 +17,11 @@ FIELD_LABELS = {
     "boundaries": "범위 밖",
     "acceptance": "완료 기준",
 }
-READ_COMMANDS = {"/hub": "hub", "/git": "git", "/work": "work", "/model": "model"}
+READ_COMMANDS = {"/hub": "hub", "/git": "git", "/work": "work", "/model": "model", "/jobs": "jobs"}
+# 인자를 받는 읽기 전용·알림 설정 명령. 승인 없이 처리하되 경로 검사는 실행 단계에서 한다.
+UNQUIET_VALUES = {"unquiet", "unmute", "quiet off", "quiet_off", "조용히 해제", "해제"}
+ARG_COMMANDS = {"/files": "files", "/logs": "logs", "/quiet": "quiet", "/alerts": "alerts", "/brief": "brief"}
+HINT_RE = re.compile(r"[^0-9A-Za-z가-힣 _.\-]+")
 USAGE = {
     "/new": (
         "작업 내용을 함께 적어 주세요.\n"
@@ -38,6 +42,7 @@ class Decision:
     specification: dict[str, Any] | None = None
     needs_confirmation: bool = False
     message: str = ""
+    argument: str = ""
 
 
 class Policy:
@@ -105,6 +110,8 @@ class Policy:
             return Decision(intent="list_tasks")
         if command in READ_COMMANDS:
             return Decision(intent=READ_COMMANDS[command])
+        if command in ARG_COMMANDS:
+            return Decision(intent=ARG_COMMANDS[command], argument=clean_hint(argument))
         if command == "/task":
             if task_id:
                 return Decision(intent="task_detail", task_id=task_id)
@@ -154,6 +161,20 @@ class Policy:
                 }
             )
             return self._task_from_text(original, interpretation)
+        if kind == "send_files":
+            # 읽기 전용 전달: 승인 없이 결과물 목록 버튼을 띄운다. 실제 파일은 경로 검사 후 버튼으로만 보낸다.
+            return Decision(intent="files", argument=clean_hint(getattr(action, "job_hint", None) or ""))
+        if kind == "set_alerts":
+            # 값: on(먼저 알리기 켜기 + 조용히 해제) | off(치명적인 것만) | quiet <기간> | unquiet(조용히만 해제) | status
+            setting = clean_hint(getattr(action, "alerts", None) or "").lower()
+            if setting in {"on", "off", "status", ""}:
+                return Decision(intent="alerts", argument="" if setting == "status" else setting)
+            if setting in UNQUIET_VALUES:
+                return Decision(intent="quiet", argument="off")
+            if setting.startswith("quiet"):
+                rest = setting.removeprefix("quiet").strip()
+                return Decision(intent="quiet", argument="off" if rest in {"off", "해제"} else rest)
+            return Decision(intent="quiet", argument=setting)
         if kind in {"task_detail", "stop_task", "merge", "push", "deploy"}:
             if not task_id or not TASK_ID_RE.fullmatch(task_id):
                 return None
@@ -206,3 +227,8 @@ class Policy:
             project_id=result.project_id,
             message=result.summary,
         )
+
+
+def clean_hint(value: str, limit: int = 80) -> str:
+    """작업 힌트·명령 인자. 경로 구분자·셸 문자를 지운 짧은 문자열만 남긴다(경로로 쓰지 않는다)."""
+    return " ".join(HINT_RE.sub(" ", str(value or "")).split())[:limit]
