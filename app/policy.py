@@ -135,10 +135,18 @@ class Policy:
             if not objective:
                 return None
             project_id = getattr(action, "project_id", None)
+            if project_id:
+                # 등록되지 않은 프로젝트를 기본 프로젝트로 몰래 바꾸지 않는다. 답변만 남기고 동작은 버린다.
+                if project_id not in self.project_ids:
+                    return None
+            elif len(self.project_ids) == 1:
+                project_id = self.project_ids[0]
+            else:
+                return None
             interpretation = Interpretation.from_dict(
                 {
                     "intent": "create_task",
-                    "project_id": project_id if project_id in self.project_ids else self.project_ids[0],
+                    "project_id": project_id,
                     "objective": objective,
                     "output_format": getattr(action, "output_format", ""),
                     "boundaries": list(getattr(action, "boundaries", []) or []),

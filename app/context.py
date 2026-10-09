@@ -163,10 +163,23 @@ def host_summary() -> dict[str, Any]:
     }
 
 
-def build_snapshot(store: Any, paths: WorkspacePaths | None = None) -> str:
+def project_summary(projects: dict[str, Any] | None, home: Path) -> dict[str, Any]:
+    """발주 가능한 등록 프로젝트 ID → 저장소 경로. 하나뿐이면 모델이 되묻지 않고 그것을 쓴다."""
+    items = {
+        str(project_id): home_relative(Path(getattr(project, "repo_path", "") or ""), home)
+        for project_id, project in (projects or {}).items()
+    }
+    return {"registered": items, "only": next(iter(items)) if len(items) == 1 else None}
+
+
+def build_snapshot(
+    store: Any, paths: WorkspacePaths | None = None, projects: dict[str, Any] | None = None
+) -> str:
     """LLM 에 줄 읽기 전용 상태 요약. 모든 값은 마스킹 후 길이를 제한한다."""
     paths = paths or WorkspacePaths.default()
     sections: dict[str, Any] = {}
+    if projects is not None:
+        sections["projects"] = project_summary(projects, paths.home)
     try:
         sections["host"] = host_summary()
     except Exception as exc:  # 관찰 실패는 맥락에서 '미확인'으로 드러낸다.

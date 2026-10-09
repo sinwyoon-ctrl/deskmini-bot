@@ -21,6 +21,10 @@ class ReleaseError(RuntimeError):
     pass
 
 
+class ReleaseRefused(ReleaseError):
+    """정책상 승인 카드를 만들지 않는 경우. 메시지는 사용자에게 그대로 보여 줄 한국어 문장이다."""
+
+
 class ReleaseManager:
     def __init__(self, settings: Settings, store: StateStore):
         self.settings = settings
@@ -30,9 +34,16 @@ class ReleaseManager:
         if action not in {"merge", "push", "deploy"}:
             raise ReleaseError("Unsupported release action")
         task = self.store.get_task(task_id)
+        project = self.settings.projects[task["project_id"]]
+        if action == "deploy":
+            if not project.deploy_enabled:
+                raise ReleaseRefused(
+                    f"{task['project_id']} 프로젝트는 배포가 꺼져 있어(deploy_enabled=false) 배포 승인 카드를 만들지 않습니다."
+                )
+            if project.deploy_environment != "staging":
+                raise ReleaseRefused("배포는 스테이징만 허용되어 배포 승인 카드를 만들지 않습니다.")
         if task["state"] != "READY" or not SHA_RE.fullmatch(task.get("head_sha") or ""):
             raise ReleaseError("Only a verified READY task can be released")
-        project = self.settings.projects[task["project_id"]]
         payload = {
             "task_id": task_id,
             "task_version": task["version"],

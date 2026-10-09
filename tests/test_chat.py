@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import tempfile
@@ -335,7 +336,7 @@ class BotChatTests(WorkspaceFixture):
     def test_create_task_action_only_yields_approval_card(self):
         action = {
             "type": "create_task",
-            "project_id": "unknown-project",
+            "project_id": None,
             "objective": "메모리 조회 API 추가",
             "output_format": "변경사항",
             "boundaries": ["배포 제외"],
@@ -353,6 +354,56 @@ class BotChatTests(WorkspaceFixture):
         task = self.bot.store.list_tasks(1)[0]
         self.assertEqual(task["state"], "AWAITING_START")
         self.assertEqual(task["project_id"], "deskmini")
+
+    def test_create_task_for_unregistered_project_is_dropped(self):
+        action = {"type": "create_task", "project_id": "other-repo", "objective": "README 수정"}
+        self.bot.chat = FakeResponder(self.chat_result("other-repo 는 등록되지 않았어요.", action))
+        self.bot._handle_message(self.message("other-repo README 고쳐줘"), 3)
+        self.assertEqual(len(self.bot.telegram.sent), 1)
+        self.assertIsNone(self.bot.telegram.sent[-1]["reply_markup"])
+        self.assertEqual(self.bot.store.list_tasks(5), [])
+
+    def _task_in_state(self, state):
+        task = self.bot.store.create_task(
+            owner_user_id=100,
+            chat_id=100,
+            project_id="deskmini",
+            request_text="x",
+            specification={"objective": "x"},
+            policy_hash="h",
+            budget={"runtime_seconds": 60, "retries": 1},
+            source_update_id=None,
+        )
+        with self.bot.store.connect() as connection:
+            connection.execute("UPDATE tasks SET state=? WHERE id=?", (state, task["id"]))
+        return task["id"]
+
+    def test_stop_action_for_missing_or_finished_task_sends_note(self):
+        stopped = []
+        self.bot._stop_task = lambda task_id: stopped.append(task_id)
+        finished = self._task_in_state("CANCELLED")
+        for task_id in ("T-20991231-ffffff", finished):
+            self.bot.chat = FakeResponder(
+                self.chat_result("중단할까요?", {"type": "stop_task", "task_id": task_id})
+            )
+            self.bot._handle_message(self.message("그거 멈춰"), None)
+            note = self.bot.telegram.sent[-1]
+            self.assertIsNone(note["reply_markup"])
+            self.assertIn("해당 작업이 없거나 이미 끝났습니다", note["text"])
+            self.assertIn(task_id, note["text"])
+        self.assertEqual(stopped, [])
+
+    def test_deploy_disabled_refuses_without_card(self):
+        task_id = self._task_in_state("READY")
+        with self.bot.store.connect() as connection:
+            connection.execute("UPDATE tasks SET head_sha=?, base_sha=? WHERE id=?", ("a" * 40, "b" * 40, task_id))
+        self.bot._offer_release(task_id, "deploy")
+        sent = self.bot.telegram.sent[-1]
+        self.assertIsNone(sent["reply_markup"])
+        self.assertIn("배포가 꺼져", sent["text"])
+        with self.bot.store.connect() as connection:
+            count = connection.execute("SELECT COUNT(*) FROM approvals WHERE task_id=?", (task_id,)).fetchone()[0]
+        self.assertEqual(count, 0)
 
     def test_release_action_goes_through_offer_release(self):
         offered = []
@@ -377,13 +428,14 @@ class BotChatTests(WorkspaceFixture):
     def test_stop_action_requires_button(self):
         stopped = []
         self.bot._stop_task = lambda task_id: stopped.append(task_id)
+        task_id = self._task_in_state("RUNNING")
         self.bot.chat = FakeResponder(
-            self.chat_result("중단할까요?", {"type": "stop_task", "task_id": "T-20261009-abcdef"})
+            self.chat_result("중단할까요?", {"type": "stop_task", "task_id": task_id})
         )
         self.bot._handle_message(self.message("그거 멈춰"), None)
         self.assertEqual(stopped, [])
         markup = self.bot.telegram.sent[-1]["reply_markup"]
-        self.assertEqual(markup["inline_keyboard"][0][0]["callback_data"], "stop:T-20261009-abcdef")
+        self.assertEqual(markup["inline_keyboard"][0][0]["callback_data"], f"stop:{task_id}")
 
     def test_both_providers_down_sends_command_help(self):
         self.bot.chat = FakeResponder(error=ChatUnavailable(("claude: x", "gemini: y")))
@@ -433,6 +485,12 @@ class CommandOutputTests(WorkspaceFixture):
         for marker in ("bot_tasks", "agent_hub_board", "첫 커밋", "hero-final", "기록 6"):
             self.assertIn(marker, snapshot)
         self.assertLessEqual(len(snapshot), 7_000)
+
+    def test_snapshot_lists_registered_projects(self):
+        snapshot = build_snapshot(self.bot.store, self.paths, self.settings.projects)
+        data = json.loads(snapshot)
+        self.assertEqual(data["projects"], {"registered": {"deskmini": "~/repo"}, "only": "deskmini"})
+        self.assertNotIn("projects", json.loads(build_snapshot(self.bot.store, self.paths)))
 
     def test_long_output_is_truncated_for_telegram(self):
         (self.paths.agent_hub / "BOARD.md").write_text("줄\n" * 5_000, encoding="utf-8")
@@ -490,6 +548,35 @@ class PolicyChatTests(unittest.TestCase):
 
     def test_create_action_without_objective_is_dropped(self):
         self.assertIsNone(self.policy.from_chat_action(ChatAction(type="create_task"), "만들어줘"))
+
+    def test_create_action_project_resolution(self):
+        missing = self.policy.from_chat_action(ChatAction(type="create_task", objective="x"), "x")
+        self.assertEqual(missing.project_id, "deskmini")
+        unknown = ChatAction(type="create_task", objective="x", project_id="other")
+        self.assertIsNone(self.policy.from_chat_action(unknown, "x"))
+        multi = Policy(FakeGemini(), ["deskmini", "other"])
+        self.assertIsNone(multi.from_chat_action(ChatAction(type="create_task", objective="x"), "x"))
+        self.assertEqual(multi.from_chat_action(unknown, "x").project_id, "other")
+
+
+class PromptRulesTests(unittest.TestCase):
+    def test_server_rules_are_in_system_prompt(self):
+        for phrase in (
+            "운영/관리자 사이트는 읽기 전용",
+            "스테이징만",
+            "portainer·deskmini",
+            "win11",
+            "sudo",
+            "force push",
+            "브랜치 삭제",
+            "폴더 통째 삭제",
+            "비밀값",
+            "직접 하시려면",
+            "250자",
+            "질문 하나",
+            "등록 프로젝트가 하나뿐이면",
+        ):
+            self.assertIn(phrase, SYSTEM_PROMPT)
 
     def test_fallback_text_lists_commands(self):
         self.assertIn("/status", FALLBACK_TEXT)

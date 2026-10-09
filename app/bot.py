@@ -27,7 +27,7 @@ from app.context import (
     repo_summary,
 )
 from app.policy import Decision, Policy
-from app.release import ReleaseError, ReleaseManager
+from app.release import ReleaseError, ReleaseManager, ReleaseRefused
 from app.runner import RunnerError, TaskRunner
 from app.redact import redact_text
 from app.state import ConflictError, StateStore
@@ -190,7 +190,7 @@ class ChiefBot:
     def _chat_reply(self, text: str, update_id: int | None) -> None:
         chat_id = self.settings.allowed_chat_id
         history = self.store.recent_chat_messages(chat_id, self.chat_config.history_turns)
-        snapshot = build_snapshot(self.store, self.paths)
+        snapshot = build_snapshot(self.store, self.paths, self.settings.projects)
         try:
             result = self.chat.respond(text, history, snapshot)
         except ChatUnavailable as exc:
@@ -290,6 +290,14 @@ class ChiefBot:
             return
         if decision.intent == "stop_task" and decision.task_id:
             if decision.needs_confirmation:
+                # 모델이 제안한 중단: 실제로 있고 진행 중인 작업에만 버튼을 띄운다.
+                try:
+                    current = self.store.get_task(decision.task_id)
+                except KeyError:
+                    current = None
+                if current is None or current["state"] not in ACTIVE_STATES:
+                    self._send(f"해당 작업이 없거나 이미 끝났습니다: <code>{esc(decision.task_id)}</code>")
+                    return
                 self._send(
                     f"중단하려면 버튼을 눌러 주세요: <code>{esc(decision.task_id)}</code>",
                     reply_markup=self._running_keyboard(decision.task_id),
@@ -430,6 +438,9 @@ class ChiefBot:
                 task_version=task["version"],
                 ttl_seconds=self.settings.approval_ttl_seconds,
             )
+        except ReleaseRefused as exc:
+            self._send(esc(exc))
+            return
         except (ReleaseError, KeyError) as exc:
             self._send(f"{esc(action)} 승인 카드를 만들 수 없습니다: {esc(exc)}")
             return
