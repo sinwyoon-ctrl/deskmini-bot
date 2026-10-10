@@ -17,6 +17,7 @@ from app.redact import redact_text
 
 LOG = logging.getLogger("deskmini-chief.chat")
 API_KEY_NAME = "ANTHROPIC_API_KEY"
+WORKSPACE_ID_NAME = "ANTHROPIC_WORKSPACE_ID"
 ACTIONS = (
     "none",
     "create_task",
@@ -292,9 +293,12 @@ class ChatResponder:
         if self.env_path is None:
             return ""
         try:
-            return load_env_file(self.env_path).get(API_KEY_NAME, "").strip()
+            values = load_env_file(self.env_path)
         except OSError:
             return ""
+        # 워크스페이스에 묶이지 않은 키는 anthropic-workspace-id 헤더가 필요하다(10/10 실제 400 원인).
+        self.claude.workspace_id = values.get(WORKSPACE_ID_NAME, "").strip()
+        return values.get(API_KEY_NAME, "").strip()
 
     def active_providers(self) -> list[tuple[str, str]]:
         """(provider, model) 시도 순서. 키는 돌려주지 않는다."""
@@ -331,7 +335,7 @@ class ChatResponder:
                 if not reply:
                     raise ValueError("empty reply")
             except (ClaudeUnavailable, InterpretationUnavailable, ValueError, TypeError) as exc:
-                errors.append(f"{provider}: {redact_text(str(exc), 200)}")
+                errors.append(f"{provider}: {redact_text(str(exc), 400)}")
                 LOG.warning("Chat provider %s failed: %s", provider, type(exc).__name__)
                 continue
             except Exception as exc:  # SDK 내부 예외 등도 다음 제공자로 넘긴다.

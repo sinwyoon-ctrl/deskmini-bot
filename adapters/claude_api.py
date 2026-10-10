@@ -35,6 +35,7 @@ class ClaudeChatClient:
         self.max_tokens = max_tokens
         self.timeout_seconds = timeout_seconds
         self.client_factory = client_factory
+        self.workspace_id = ""
 
     def _client(self, api_key: str) -> Any:
         if self.client_factory is not None:
@@ -43,7 +44,10 @@ class ClaudeChatClient:
             import anthropic
         except ImportError as exc:
             raise ClaudeUnavailable("anthropic SDK not installed") from exc
-        return anthropic.Anthropic(api_key=api_key, timeout=self.timeout_seconds, max_retries=1)
+        headers = {"anthropic-workspace-id": self.workspace_id} if self.workspace_id else None
+        return anthropic.Anthropic(
+            api_key=api_key, timeout=self.timeout_seconds, max_retries=1, default_headers=headers
+        )
 
     def complete(
         self,
@@ -79,7 +83,9 @@ class ClaudeChatClient:
             )
         except api_errors as exc:
             status = getattr(exc, "status_code", None)
-            raise ClaudeUnavailable(f"{type(exc).__name__}{f' {status}' if status else ''}") from exc
+            # API 오류 본문(키 없음)을 마스킹해서 남긴다. 400 원인을 알 수 없던 문제(10/10) 때문에 추가.
+            detail = redact_text(str(getattr(exc, "message", "") or exc), 300)
+            raise ClaudeUnavailable(f"{type(exc).__name__}{f' {status}' if status else ''}: {detail}") from exc
         if getattr(response, "stop_reason", None) == "refusal":
             raise ClaudeUnavailable("refusal")
         text = next(
