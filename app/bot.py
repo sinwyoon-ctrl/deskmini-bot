@@ -54,6 +54,7 @@ from app.jobs import (
     match_job,
     tail_text,
 )
+from app.codex_usage import latest_codex_limits, window_label
 from app.context import (
     WorkspacePaths,
     board_text,
@@ -457,6 +458,9 @@ class ChiefBot:
             return
         if decision.intent == "model":
             self._send(self._model_text())
+            return
+        if decision.intent == "codex":
+            self._send(self._codex_text())
             return
         if decision.intent == "status":
             self._send(self._status_text())
@@ -1272,6 +1276,7 @@ class ChiefBot:
             "/git — 저장소별 최근 커밋\n"
             "/work — ~/work 최근 작업 폴더\n"
             "/model — 현재 대화 모델\n"
+            "/codex — DeskMini Codex 사용 한도\n"
             "/jobs — 장시간 작업(렌더) 상태\n"
             "/files 작업 — 결과물 받기(버튼)\n"
             "/logs 작업 — 작업 로그 끝 30줄\n"
@@ -1325,6 +1330,29 @@ class ChiefBot:
             return f"<code>{esc(home_relative(self.paths.work, self.paths.home))}</code> 아래에 작업 폴더가 없거나 읽지 못했습니다."
         lines = [f"• {esc(item['modified'])} · <code>{esc(item['name'])}</code>" for item in dirs]
         return _fit("<b>최근 수정된 작업 폴더</b> (~/work)\n" + "\n".join(lines))
+
+    def _codex_text(self) -> str:
+        limits = latest_codex_limits(self.paths.home)
+        if not limits:
+            return "DeskMini Codex 사용 기록이 아직 없어 한도를 확인할 수 없습니다. Codex 가 한 번 실행되면 표시됩니다."
+        tz = self.alert_config.tz
+        lines = ["<b>DeskMini Codex 사용 한도</b>"]
+        for key in ("primary", "secondary"):
+            window = limits.get(key)
+            if not window:
+                continue
+            left = max(0.0, 100.0 - window["used_percent"])
+            reset = window["resets_at"].astimezone(tz).strftime("%m-%d %H:%M") if window["resets_at"] else "미확인"
+            lines.append(
+                f"• {esc(window_label(window['window_minutes']))}: {window['used_percent']:.0f}% 사용 · "
+                f"<b>{left:.0f}% 남음</b> · 초기화 {esc(reset)}"
+            )
+        if limits.get("limit_reached"):
+            lines.append(f"⚠️ 한도 도달: {esc(limits['limit_reached'])}")
+        observed = limits["observed_at"].astimezone(tz).strftime("%m-%d %H:%M")
+        lines.append(f"\n관측: 마지막 Codex 실행 {esc(observed)} 기준 (요금제 {esc(limits.get('plan_type') or '미확인')})")
+        lines.append("메인 PC Codex 도 같은 계정이면 한도를 함께 씁니다. 그 사용분은 다음 DeskMini 실행 때 반영됩니다.")
+        return "\n".join(lines)
 
     def _model_text(self) -> str:
         order = self.chat.active_providers()
@@ -2059,7 +2087,7 @@ CALLBACK_RE = re.compile(r"(al|jf|jl|f|q):(\d{1,9})")
 HANDLING_BY_INTENT = {
     **{intent: "A" for intent in (
         "help", "usage", "status", "list_tasks", "task_detail", "jobs", "files", "logs", "hub", "git", "work",
-        "model", "brief", "quiet", "alerts", "todo_list",
+        "model", "codex", "brief", "quiet", "alerts", "todo_list",
     )},
     **{intent: "B" for intent in ("create_task", "retry", "stop_task", "merge", "push", "deploy")},
     **{intent: "C" for intent in ("todo_add", "todo_done", "visual_request", "visual_suggest")},

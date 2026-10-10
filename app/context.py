@@ -203,6 +203,18 @@ def build_snapshot(
     except Exception as exc:  # 관찰 실패는 맥락에서 '미확인'으로 드러낸다.
         sections["host"] = f"미확인: {type(exc).__name__}"
     sections["bot_tasks"] = task_summaries(store)
+    try:
+        from app.codex_usage import latest_codex_limits
+        limits = latest_codex_limits(paths.home)
+        if limits:
+            sections["codex_limits"] = {
+                key: ({"used_percent": w["used_percent"], "window_minutes": w["window_minutes"],
+                       "resets_at": w["resets_at"].astimezone(DISPLAY_TZ).strftime("%m-%d %H:%M") if w["resets_at"] else None}
+                      if (w := limits.get(key)) else None)
+                for key in ("primary", "secondary")
+            } | {"observed_at": limits["observed_at"].astimezone(DISPLAY_TZ).strftime("%m-%d %H:%M"), "note": "마지막 DeskMini Codex 실행 기준"}
+    except Exception:
+        sections["codex_limits"] = "미확인"
     sections["agent_hub_board"] = board_text(paths, 1_500)
     sections["agent_hub_locks"] = hub_locks(paths)
     sections["agent_hub_recent_log"] = recent_hub_logs(paths, 5, 200)

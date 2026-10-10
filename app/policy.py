@@ -19,7 +19,7 @@ FIELD_LABELS = {
     "boundaries": "범위 밖",
     "acceptance": "완료 기준",
 }
-READ_COMMANDS = {"/hub": "hub", "/git": "git", "/work": "work", "/model": "model", "/jobs": "jobs"}
+READ_COMMANDS = {"/hub": "hub", "/git": "git", "/work": "work", "/model": "model", "/jobs": "jobs", "/codex": "codex"}
 # 인자를 받는 읽기 전용·알림 설정 명령. 승인 없이 처리하되 경로 검사는 실행 단계에서 한다.
 UNQUIET_VALUES = {"unquiet", "unmute", "quiet off", "quiet_off", "조용히 해제", "해제"}
 ARG_COMMANDS = {"/files": "files", "/logs": "logs", "/quiet": "quiet", "/alerts": "alerts", "/brief": "brief"}
