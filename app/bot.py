@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import html
+import os
+import socket
 import json
 import logging
 import signal
@@ -105,6 +107,22 @@ def esc(value: Any) -> str:
     return html.escape(redact_text(text, len(text) + 1), quote=True)
 
 
+
+def sd_notify(state: str) -> None:
+    """systemd 에 상태를 알린다(NOTIFY_SOCKET 이 없으면 아무것도 하지 않음)."""
+    address = os.environ.get("NOTIFY_SOCKET")
+    if not address:
+        return
+    if address.startswith("@"):
+        address = "\0" + address[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(address)
+            sock.sendall(state.encode())
+    except OSError:
+        pass
+
+
 class ChiefBot:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -151,6 +169,7 @@ class ChiefBot:
             "명령: /status · /tasks · /jobs · /files · /hub · /git · /work · /new · /help",
         )
         while not self.stopping:
+            sd_notify("WATCHDOG=1")  # 루프가 멈추면 systemd(WatchdogSec) 가 재시작한다(10/10 멈춤 사고)
             self._process_futures()
             self._reconcile_tasks()
             self._run_scheduled_retries()

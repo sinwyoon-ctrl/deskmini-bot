@@ -11,6 +11,8 @@ Environment=PYTHONUNBUFFERED=1
 Environment=DESKMINI_CHIEF_ENV=/home/ionenet/.config/notify.env
 Restart=on-failure
 RestartSec=10s
+WatchdogSec=180s
+NotifyAccess=main
 TimeoutStopSec=20s
 NoNewPrivileges=yes
 PrivateTmp=yes
