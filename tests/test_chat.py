@@ -489,7 +489,7 @@ class CommandOutputTests(WorkspaceFixture):
     def test_snapshot_lists_registered_projects(self):
         snapshot = build_snapshot(self.bot.store, self.paths, self.settings.projects)
         data = json.loads(snapshot)
-        self.assertEqual(data["projects"], {"registered": {"deskmini": "~/repo"}, "only": "deskmini"})
+        self.assertEqual(data["projects"], {"registered": {"deskmini": "~/repo"}, "only": "deskmini", "default": "deskmini", "descriptions": {"deskmini": ""}})
         self.assertNotIn("projects", json.loads(build_snapshot(self.bot.store, self.paths)))
 
     def test_long_output_is_truncated_for_telegram(self):
@@ -555,7 +555,8 @@ class PolicyChatTests(unittest.TestCase):
         unknown = ChatAction(type="create_task", objective="x", project_id="other")
         self.assertIsNone(self.policy.from_chat_action(unknown, "x"))
         multi = Policy(FakeGemini(), ["deskmini", "other"])
-        self.assertIsNone(multi.from_chat_action(ChatAction(type="create_task", objective="x"), "x"))
+        # 4라운드: 프로젝트를 말하지 않으면 기본 프로젝트(첫 등록)로 발주 카드를 띄운다(카드에 프로젝트가 보이고 착수 승인 필요).
+        self.assertEqual(multi.from_chat_action(ChatAction(type="create_task", objective="x"), "x").project_id, "deskmini")
         self.assertEqual(multi.from_chat_action(unknown, "x").project_id, "other")
 
 

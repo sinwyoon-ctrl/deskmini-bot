@@ -272,9 +272,13 @@ class Env300:
         src.close()
         dst.close()
         StateStore(self.master, ROOT / "schema.sql")
-        with sqlite3.connect(self.master) as con:
+        con = sqlite3.connect(self.master)
+        with con:
             for table in ("chat_messages", "outbox", "alerts", "watch_state", "jobs", "deliverables", "inbox"):
                 con.execute(f"DELETE FROM {table}")
+        # WAL 에 남은 삭제가 shutil.copy 로 빠지지 않게 체크포인트 후 닫는다(운영 DB 에 watch_state 가 생긴 뒤 드러난 픽스처 결함).
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        con.close()
         self.env_file = self.tmp / "sim.env"
         self.env_file.write_text(f"ANTHROPIC_API_KEY={base.PLACEHOLDER_KEY}\n")
         self.projects = load_projects(ROOT / "config" / "projects.toml", self.tmp / "state")

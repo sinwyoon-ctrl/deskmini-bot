@@ -52,6 +52,10 @@ class ReleaseManager:
             "base_sha": task["base_sha"],
             "head_sha": task["head_sha"],
         }
+        if action == "push" and not self._has_origin(project):
+            raise ReleaseRefused(
+                f"{task['project_id']} 저장소에는 원격(origin)이 없어 push 단계가 없습니다. 로컬 병합으로 끝났습니다."
+            )
         if action == "push":
             payload.update(
                 {
@@ -392,6 +396,10 @@ class ReleaseManager:
 
     def _remote_fingerprint(self, project: ProjectConfig) -> str:
         return hashlib.sha256(self._push_url(project).encode("utf-8")).hexdigest()
+
+    def _has_origin(self, project: ProjectConfig) -> bool:
+        result = run_fixed(("git", "remote"), cwd=project.repo_path, timeout=10)
+        return result.ok and "origin" in result.stdout.split()
 
     def _push_url(self, project: ProjectConfig) -> str:
         try:

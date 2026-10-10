@@ -40,6 +40,8 @@ class ProjectConfig:
     healthcheck_command: tuple[str, ...] | None
     rollback_command: tuple[str, ...] | None
     deployed_version_command: tuple[str, ...] | None
+    # 이 저장소가 무엇인지 한 줄(대화 모델의 능력 지도·발주 프로젝트 확인에 쓴다).
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -159,6 +161,7 @@ def load_projects(path: Path, state_dir: Path) -> dict[str, ProjectConfig]:
             deployed_version_command=_command(
                 data.get("deployed_version_command"), "deployed_version_command"
             ),
+            description=str(data.get("description") or "")[:200],
         )
     if not projects:
         raise RuntimeError("At least one registered project is required")

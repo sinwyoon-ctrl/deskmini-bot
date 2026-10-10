@@ -63,16 +63,32 @@ from app.context import (
     registered_repos,
     repo_summary,
 )
+from app.inbox import (
+    MAX_ATTACHMENT_BYTES,
+    AttachmentRejected,
+    check_content,
+    describe,
+    incoming_from_message,
+    photo_name,
+    sanitize_name,
+    store_file,
+    text_preview,
+)
 from app.policy import Decision, Policy
 from app.release import ReleaseError, ReleaseManager, ReleaseRefused
+from app.retry import RETRY_MARGIN, parse_reset_time, reset_pending, scheduled_time
 from app.runner import RunnerError, TaskRunner
 from app.redact import redact_html, redact_text
 from app.state import ConflictError, StateStore
-from app.verify import VerificationError, Verifier
+from app.todo import HubTodo
+from app.verify import VerificationError, Verifier, build_reviewer
+from app.visual import STATUS_LABELS as HANDOFF_STATUS_LABELS
+from app.visual import card_conclusion, create_visual_request, handoff_status, todo_id_from_output
 from app.watch import Observation, detect
 
 
 LOG = logging.getLogger("deskmini-chief")
+RELEASE_ACTIONS = frozenset({"merge", "push", "deploy"})
 ACTIVE_STATES = (
     "QUEUED",
     "STARTING",
@@ -99,12 +115,16 @@ class ChiefBot:
         )
         models_path = settings.root / "config" / "models.toml"
         self.gemini = GeminiInterpreter(settings.gemini_script, model=gemini_model(models_path))
-        self.policy = Policy(self.gemini, list(settings.projects))
+        self.policy = Policy(
+            self.gemini,
+            list(settings.projects),
+            {pid: getattr(project, "description", "") for pid, project in settings.projects.items()},
+        )
         self.chat_config = ChatConfig.load(models_path)
         self.chat = ChatResponder(self.chat_config, env_path=settings.env_path, gemini=self.gemini)
         self.paths = WorkspacePaths.default()
         self.runner = TaskRunner(settings, self.store)
-        self.verifier = Verifier(settings, self.store, self.gemini)
+        self.verifier = Verifier(settings, self.store, build_reviewer(models_path, self.gemini, settings.state_dir))
         self.release = ReleaseManager(settings, self.store)
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="chief")
         self.verification_futures: dict[str, Future[dict[str, Any]]] = {}
@@ -133,6 +153,7 @@ class ChiefBot:
         while not self.stopping:
             self._process_futures()
             self._reconcile_tasks()
+            self._run_scheduled_retries()
             self._flush_outbox()
             self._maybe_watch()
             offset = self.store.next_update_offset()
@@ -161,22 +182,40 @@ class ChiefBot:
                 self.store.add_event(
                     operation["task_id"], None, "OPERATION_OUTCOME_UNKNOWN", "recovery", recovered
                 )
-        for approval in self.store.recoverable_consumed_approvals():
-            try:
-                if approval["action"] == "start":
-                    self.runner.start(approval["task_id"])
-                else:
-                    self.release_futures[approval["task_id"]] = self.executor.submit(
-                        self.release.execute, approval
-                    )
-            except Exception as exc:
-                LOG.error(
-                    "Could not recover consumed approval %s: %s",
-                    approval["id"],
-                    type(exc).__name__,
-                )
+        self._recover_consumed_approvals()
         for update in self.store.pending_updates():
             self._handle_update(update, replay=True)
+
+    def _recover_consumed_approvals(self) -> None:
+        """소비만 되고 실행 시도 기록(outcome)이 없는 승인 = 소비 직후 크래시. 승인 유효시간 안이고 작업 버전이 그대로면
+        한 번 이어서 실행한다. 유효시간이 지났거나 예약 승인(예약 확인을 못 받은 채 몇 시간 뒤 실행되면 놀랍다)이면
+        ABANDONED 로 남기고 사용자에게 한 번 알린다. 실행이 거절·실패로 끝난 승인(outcome 기록됨)은 다시 실행하지 않는다."""
+        now = datetime.now(UTC)  # 승인 유효시간은 소비(consume_approval)와 같은 실제 시계로 잰다
+        abandoned: list[dict[str, Any]] = []
+        for approval in self.store.recoverable_consumed_approvals():
+            if approval["action"] == "schedule_retry" or datetime.fromisoformat(approval["expires_at"]) <= now:
+                self.store.set_approval_outcome(approval["id"], "ABANDONED", "not executed before restart")
+                abandoned.append(approval)
+                continue
+            try:
+                self._execute_approval(approval)
+            except Exception as exc:
+                LOG.error("Could not recover consumed approval %s: %s", approval["id"], type(exc).__name__)
+                refused = isinstance(exc, (RunnerError, ConflictError))
+                self.store.set_approval_outcome(
+                    approval["id"], "ABANDONED" if refused else "FAILED", f"recovery: {type(exc).__name__}: {exc}"
+                )
+                abandoned.append(approval)
+                continue
+            if approval["action"] not in RELEASE_ACTIONS:
+                self.store.set_approval_outcome(approval["id"], "EXECUTED", "recovered after restart")
+        if abandoned:
+            ids = ", ".join(f"<code>{esc(item['task_id'])}</code>" for item in abandoned[:5])
+            self._notify(
+                f"approvals-abandoned-{abandoned[0]['id']}",
+                f"⚠️ 재시작 전에 처리되지 못한 승인은 폐기했습니다 — 다시 요청해 주세요: {ids}\n"
+                "착수는 /new, 재시도는 <code>/retry 작업ID</code> 로 버튼을 다시 띄웁니다.",
+            )
 
     def stop(self, *_: Any) -> None:
         self.stopping = True
@@ -198,6 +237,12 @@ class ChiefBot:
             elif "callback_query" in update:
                 self._handle_callback(update["callback_query"], replay=replay)
             self.store.finish_update(update_id)
+        except (ConflictError, RunnerError) as exc:
+            # 만료·이미 사용한 승인, 진행 중인 다른 작업 같은 예상된 거절: 알기 쉬운 안내 한 번 + 처리 완료로 남긴다
+            # (FAILED 로 두면 Telegram 재배달·재시작 재생 때 같은 안내가 반복된다).
+            LOG.info("Update refused: %s", type(exc).__name__)
+            self.store.finish_update(update_id, "PROCESSED", f"{type(exc).__name__}: {exc}")
+            self._send(self._refusal_text(exc))
         except Exception as exc:
             LOG.error("Update processing failed: %s", type(exc).__name__)
             self.store.finish_update(update_id, "FAILED", type(exc).__name__)
@@ -226,15 +271,106 @@ class ChiefBot:
     def _handle_message(self, message: dict[str, Any], update_id: int) -> None:
         if not self._authorized_message(message):
             return
+        incoming = incoming_from_message(message)
+        if incoming is not None:
+            self._handle_attachment(message, incoming, update_id)
+            return
         text = message.get("text")
         if not isinstance(text, str) or not text.strip():
-            self._send("텍스트 메시지만 처리할 수 있습니다.")
+            self._send("텍스트, 사진, 문서(pdf·txt·md·csv·json)만 처리할 수 있습니다.")
             return
         decision = self.policy.decide_fixed(text)
         if decision is not None:
             self._execute_decision(decision, text, update_id)
             return
+        pending = self._pending_attachments()
+        if pending:
+            # 캡션 없이 보낸 첨부가 있으면 이번 지시와 함께 모델에 메타데이터를 보여 준다.
+            text = text + "\n" + "\n".join(self._attachment_context(item, waiting=True) for item in pending)
         self._chat_reply(text, update_id)
+
+    # ------------------------------------------------------------------ 첨부(사진·문서)
+
+    def _pending_attachments(self) -> list[dict[str, Any]]:
+        since = (self.clock() - PENDING_ATTACHMENT_WINDOW).isoformat(timespec="seconds")
+        return self.store.pending_attachments(self.settings.allowed_chat_id, since)
+
+    def _attachment_context(self, item: dict[str, Any], *, waiting: bool = False) -> str:
+        line = describe(item)
+        if waiting:
+            line = line.replace("[첨부:", "[대기 중 첨부:", 1)
+        preview = text_preview(item)
+        if preview:
+            line += "\n[첨부 내용(마스킹)]\n" + preview
+        return line
+
+    def _handle_attachment(self, message: dict[str, Any], incoming: Any, update_id: int) -> None:
+        caption = message.get("caption") if isinstance(message.get("caption"), str) else ""
+        caption = caption.strip()
+        # 크래시 뒤 같은 update 를 재생하면 이미 저장한 파일을 다시 받지 않는다((update_id, file_unique_id) 기준).
+        existing = self.store.attachment_for_file(update_id, incoming.file_key)
+        if existing is not None:
+            attachment_id = int(existing["id"])
+            item = existing
+        else:
+            try:
+                if incoming.size is not None and incoming.size > MAX_ATTACHMENT_BYTES:
+                    raise AttachmentRejected("20MB 를 넘는 파일은 받지 않습니다.")
+                name = sanitize_name(incoming.name, incoming.mime)
+                info = self.telegram.get_file(incoming.file_id)
+                if int(info.get("file_size") or 0) > MAX_ATTACHMENT_BYTES:
+                    raise AttachmentRejected("20MB 를 넘는 파일은 받지 않습니다.")
+                content = self.telegram.download_file(str(info.get("file_path") or ""), MAX_ATTACHMENT_BYTES)
+                if incoming.kind == "photo":
+                    name = photo_name(name, content)
+                check_content(name, content)
+            except AttachmentRejected as exc:
+                self.store.add_event(None, None, "ATTACHMENT_REJECTED", "inbox", {"reason": str(exc), "kind": incoming.kind})
+                self._send(f"📎 받지 않았습니다: {esc(exc)}")
+                return
+            except TelegramError as exc:
+                self._send(f"📎 파일을 내려받지 못했습니다: {esc(redact_text(str(exc), 200))}")
+                return
+            now = self.clock()
+            path, digest = store_file(self.settings.state_dir / "inbox", name, content, now)
+            attachment_id = self.store.add_attachment(
+                update_id=update_id,
+                chat_id=self.settings.allowed_chat_id,
+                kind=incoming.kind,
+                original_name=incoming.name,
+                stored_name=name,
+                stored_path=str(path),
+                mime=incoming.mime,
+                size=len(content),
+                sha256=digest,
+                caption=caption or None,
+                file_unique_id=incoming.file_key,
+            )
+            item = self.store.get_attachment(attachment_id) or {}
+            self.store.add_event(None, None, "ATTACHMENT_STORED", "inbox", {"id": attachment_id, "name": name, "size": len(content)})
+        if not caption:
+            if message.get("media_group_id"):
+                self._send(f"📎 받았습니다: {esc(describe(item))}")
+                return
+            self._send(
+                f"📎 받았습니다: {esc(describe(item))}\n\n"
+                "이 파일로 무엇을 할까요? 30분 안에 보내는 다음 지시에 붙입니다.\n"
+                f"예: <code>/new sandbox: 첨부한 표를 README 에 정리</code> 또는 그냥 설명을 보내 주세요."
+            )
+            return
+        decision = self.policy.decide_fixed(caption)
+        if decision is not None:
+            self._execute_decision(decision, caption, update_id)
+            return
+        others = [entry for entry in self._pending_attachments() if entry.get("id") != attachment_id]
+        context = [self._attachment_context(item)] + [self._attachment_context(entry, waiting=True) for entry in others]
+        self._chat_reply(caption + "\n" + "\n".join(context), update_id)
+
+    def _link_attachments(self, task_id: str, source_update_id: int | None) -> list[dict[str, Any]]:
+        ids = [item["id"] for item in self.store.attachments_for_update(source_update_id)] if source_update_id else []
+        ids += [item["id"] for item in self._pending_attachments() if item["id"] not in ids]
+        self.store.link_attachments(task_id, ids)
+        return self.store.attachments_for_task(task_id)
 
     def _chat_reply(self, text: str, update_id: int | None) -> None:
         chat_id = self.settings.allowed_chat_id
@@ -274,6 +410,8 @@ class ChiefBot:
                 "proposed_action": result.action.type,
                 "proposed_task_id": result.action.task_id,
                 "accepted_intent": decision.intent if decision else None,
+                "handling_class": handling_class(decision, result.handling),
+                "model_handling": result.handling,
                 "latency_ms": result.latency_ms,
                 "usage": result.usage,
                 "fallback_errors": list(result.errors),
@@ -322,6 +460,41 @@ class ChiefBot:
         if decision.intent == "brief":
             self._send(self.brief_text(self.clock()))
             return
+        if decision.intent == "retry" and decision.task_id:
+            self._offer_retry(decision.task_id)
+            return
+        if decision.intent == "todo_list":
+            result = self.hub_todo.list()
+            title = "<b>열린 할 일</b> (agent-hub/todo)" if result.ok else "⚠️ 할 일 목록을 읽지 못했습니다"
+            self._send(_fit(
+                f"{title}\n<pre>{esc(result.output or '- 없음')}</pre>\n" + self._handoff_lines()
+                + "추가: <code>/todo codex 할 일</code> · 닫기: <code>/todo done 번호</code>"
+            ))
+            return
+        if decision.intent == "visual_request":
+            self._visual_request(decision.argument, decision.project_id)
+            return
+        if decision.intent in {"visual_suggest", "ask_project"}:
+            self._send(decision.message)
+            return
+        if decision.intent == "todo_add" and decision.project_id:
+            result = self.hub_todo.add(decision.project_id, decision.argument)
+            if result.ok:
+                todo_id = todo_id_from_output(result.output)
+                self._record_handoff(decision.project_id, "todo", decision.argument, todo_id=todo_id)
+                self._send(
+                    f"📝 <b>{esc(decision.project_id)}</b> 할 일로 남겼습니다(agent-hub 커밋 · 처리 구분 C: 넘기고 결과를 받아 옴).\n"
+                    f"• {esc(decision.argument[:300])}\n추적 ID: <code>{esc(todo_id or result.output[-120:])}</code>\n"
+                    "다음 세션 시작(hub read) 때 맨 위에 보이고, 닫히면 텔레그램으로 알려 드립니다. 목록: /todo"
+                )
+            else:
+                self._send(f"⚠️ 할 일을 남기지 못했습니다: {esc(result.output[-300:])}")
+            return
+        if decision.intent == "todo_done" and decision.argument:
+            result = self.hub_todo.done(decision.argument)
+            prefix = "✅ 닫았습니다" if result.ok else "⚠️ 닫지 못했습니다"
+            self._send(f"{prefix}: <code>{esc(result.output[-200:])}</code>")
+            return
         if decision.intent == "list_tasks":
             self._send(self._tasks_text())
             return
@@ -339,6 +512,7 @@ class ChiefBot:
                 budget={"runtime_seconds": self.settings.max_runtime_seconds, "retries": 1},
                 source_update_id=source_update_id,
             )
+            self._link_attachments(task["id"], source_update_id)
             approval_id = self.store.create_approval(
                 task_id=task["id"],
                 action="start",
@@ -393,7 +567,11 @@ class ChiefBot:
         callback_id = query.get("id")
         data = str(query.get("data") or "")
         if callback_id and not replay:
-            self.telegram.answer_callback(callback_id)
+            try:
+                self.telegram.answer_callback(callback_id)
+            except Exception as exc:  # noqa: BLE001 — 버튼 로딩 표시만 지우는 호출. 실패해도 누른 것은 처리한다.
+                # 봇이 꺼진 사이 누른 버튼은 'query is too old' 로 거절된다.
+                LOG.warning("answerCallbackQuery failed: %s", redact_text(str(exc), 200))
         if data.startswith("approve:"):
             _, action, approval_id = data.split(":", 2)
             try:
@@ -419,20 +597,17 @@ class ChiefBot:
                     f"<code>{esc(previous['task_id'])}</code>"
                 )
                 return
-            if action == "start":
-                task = self.store.get_task(approval["task_id"])
-                if approval["payload"] != self._start_payload(task):
-                    raise ConflictError("Approved start payload no longer matches task")
-                started = self.runner.start(task["id"])
-                self._update_task_card(
-                    started["id"],
-                    self._task_text(started["id"]),
-                    reply_markup=self._running_keyboard(started["id"]),
+            try:
+                self._execute_approval(approval)
+            except Exception as exc:
+                refused = isinstance(exc, (RunnerError, ConflictError))
+                self.store.set_approval_outcome(
+                    approval["id"], "REFUSED" if refused else "FAILED", f"{type(exc).__name__}: {exc}"
                 )
-            elif action in {"merge", "push", "deploy"}:
-                future = self.executor.submit(self.release.execute, approval)
-                self.release_futures[approval["task_id"]] = future
-                self._send(f"⏳ <b>{esc(action)}</b> 실행을 시작했습니다: <code>{esc(approval['task_id'])}</code>")
+                raise
+            if action not in RELEASE_ACTIONS:
+                # 반영(merge·push·deploy)은 operations 기록이 실행 여부의 근거라 여기서 남기지 않는다.
+                self.store.set_approval_outcome(approval["id"], "EXECUTED")
             return
         if data.startswith("stop:"):
             self._stop_task(data.split(":", 1)[1])
@@ -444,6 +619,148 @@ class ChiefBot:
             return
         self._watch_callback(data)
 
+    # ------------------------------------------------------------------ 넘기는 일(C)
+
+    def _record_handoff(
+        self, to: str, kind: str, text: str, *, todo_id: str | None = None,
+        request_id: str | None = None, path: str | None = None,
+    ) -> None:
+        self.store.add_event(None, None, "HANDOFF_CREATED", "handoff", {
+            "to": to, "kind": kind, "text": redact_text(text, 200), "todo_id": todo_id,
+            "request_id": request_id, "path": path,
+        })
+
+    def _handoffs(self, limit: int = 10) -> list[dict[str, Any]]:
+        items = []
+        for event in self.store.recent_events_by_type("HANDOFF_CREATED", limit):
+            item = dict(event["payload"])
+            item["created_at"] = event["created_at"]
+            item["status"] = handoff_status(self.paths.agent_hub, item)
+            items.append(item)
+        return items
+
+    def _handoff_lines(self) -> str:
+        items = self._handoffs(6)
+        if not items:
+            return ""
+        lines = [
+            f"• [{esc(HANDOFF_STATUS_LABELS[item['status']])}] {esc(item.get('to'))} · "
+            f"<code>{esc(item.get('request_id') or item.get('todo_id') or '-')}</code> {esc(str(item.get('text') or '')[:60])}"
+            for item in items
+        ]
+        return "<b>봇이 넘긴 일</b>\n" + "\n".join(lines) + "\n"
+
+    def _visual_request(self, text: str, project: str | None) -> None:
+        handoff = create_visual_request(self.paths.agent_hub, self.hub_todo, text, project, self.clock().astimezone(self.alert_config.tz))
+        if not handoff.ok:
+            where = f" (요청서: <code>{esc(handoff.path)}</code>)" if handoff.path else ""
+            self._send(f"⚠️ Codex 에게 넘기지 못했습니다{where}: {esc(str(handoff.output)[-300:])}")
+            return
+        self._record_handoff("codex", "visual", text, todo_id=handoff.todo_id, request_id=handoff.request_id, path=handoff.path)
+        self._send(
+            "🎨 <b>Codex 에게 시안 요청을 넘겼습니다</b> (처리 구분 C · 승인 없음)\n"
+            f"요청 ID: <code>{esc(handoff.request_id)}</code> · 할 일: <code>{esc(handoff.todo_id or '확인 불가')}</code>\n"
+            f"요청서: <code>agent-hub/{esc(handoff.path)}</code>\n"
+            "Codex 가 판단 카드(card.md)를 올리면 결론을 텔레그램으로 알려 드립니다. "
+            "고른 안은 DeskMini 에서 Blender 로 렌더합니다. 진행 상황: /todo"
+        )
+
+    def _check_handoffs(self) -> None:
+        """넘긴 일의 결과 받아 오기: 판단 카드가 생기거나 할 일이 닫히면 한 번 알린다(outbox dedupe)."""
+        for item in self._handoffs(20):
+            key = item.get("request_id") or item.get("todo_id")
+            if not key:
+                continue
+            if item["status"] == "card":
+                card = (self.paths.agent_hub / str(item["path"])).with_name("card.md")
+                conclusion = card_conclusion(card) or "결론 줄 없음"
+                self._notify(
+                    f"handoff-card-{key}",
+                    f"📬 <b>{esc(item.get('to'))} 판단 카드 도착</b>: <code>{esc(key)}</code>\n"
+                    f"결론: {esc(conclusion)}\n<code>agent-hub/{esc(str(item['path']).rsplit('/', 1)[0])}/card.md</code>",
+                )
+            elif item["status"] == "done":
+                self._notify(
+                    f"handoff-done-{key}",
+                    f"✅ <b>{esc(item.get('to'))}</b> 가 넘긴 일을 닫았습니다: <code>{esc(key)}</code>\n"
+                    f"• {esc(str(item.get('text') or '')[:200])}",
+                )
+
+    def _execute_approval(self, approval: dict[str, Any]) -> None:
+        """소비된 승인을 실행한다. 거절(RunnerError·ConflictError)은 예외로 올리고, 재시도 거절은 직접 안내한다."""
+        action = approval["action"]
+        if action == "start":
+            task = self.store.get_task(approval["task_id"])
+            if approval["payload"] != self._start_payload(task):
+                raise ConflictError("Approved start payload no longer matches task")
+            try:
+                started = self.runner.start(task["id"])
+            except RunnerError as exc:
+                if str(exc) != "Another task is active":
+                    raise
+                # 다른 작업이 진행 중: 이 승인은 거절로 끝내고(재시작 때 몰래 착수하지 않는다) 새 착수 버튼을 준다.
+                self.store.set_approval_outcome(approval["id"], "REFUSED", str(exc))
+                self._offer_start_again(task, self._busy_text("착수하지"))
+                return
+            self._update_task_card(
+                started["id"],
+                self._task_text(started["id"]),
+                reply_markup=self._running_keyboard(started["id"]),
+            )
+        elif action == "retry":
+            self._execute_retry(approval)
+        elif action == "schedule_retry":
+            self._accept_scheduled_retry(approval)
+        elif action in RELEASE_ACTIONS:
+            future = self.executor.submit(self.release.execute, approval)
+            self.release_futures[approval["task_id"]] = future
+            self._send(f"⏳ <b>{esc(action)}</b> 실행을 시작했습니다: <code>{esc(approval['task_id'])}</code>")
+        else:
+            raise ConflictError("Approval action mismatch")
+
+    def _offer_start_again(self, task: dict[str, Any], reason: str) -> None:
+        approval_id = self.store.create_approval(
+            task_id=task["id"],
+            action="start",
+            payload=self._start_payload(task),
+            owner_user_id=self.settings.allowed_user_id,
+            chat_id=self.settings.allowed_chat_id,
+            task_version=task["version"],
+            ttl_seconds=self.settings.approval_ttl_seconds,
+        )
+        self._send(
+            f"⏸️ <code>{esc(task['id'])}</code> · {esc(reason)}\n"
+            f"버튼 유효시간: {self.settings.approval_ttl_seconds // 60}분",
+            reply_markup=inline_keyboard(
+                [[("🚀 착수", f"approve:start:{approval_id}")], [("취소", f"cancel:{task['id']}")]]
+            ),
+        )
+
+    def _busy_text(self, verb: str) -> str:
+        active = [task["id"] for task in self.store.list_tasks_in_states(ACTIVE_STATES)]
+        who = ", ".join(active[:2]) or "…"
+        return f"다른 작업({who})이 진행 중이라 {verb} 못했습니다. 끝나면 다시 시도해 주세요."
+
+    def _refusal_text(self, exc: Exception) -> str:
+        """예상된 거절(ConflictError·RunnerError)을 사용자 말로 바꾼다. 모르는 문구는 원인을 짧게 붙인다."""
+        message = str(exc)
+        if message == "Approval expired":
+            return "⌛ 승인 유효시간이 지났습니다. 상태 카드에서 다시 요청해 주세요."
+        if message == "Approval already used":
+            return "ℹ️ 이미 처리된 버튼입니다(승인은 한 번만 쓸 수 있습니다). 현재 상태는 /tasks 에서 확인해 주세요."
+        if message in {"Approval not found", "Approval action mismatch", "Approval owner mismatch"}:
+            return "⚠️ 확인할 수 없는 승인 버튼입니다. 상태 카드에서 다시 요청해 주세요."
+        if message in {"Task changed after approval", "Task version changed", "Task changed after the retry was approved"} or (
+            "no longer matches task" in message
+        ):
+            return "⚠️ 승인 뒤 작업 상태가 바뀌어 이 버튼은 더 이상 쓸 수 없습니다. 상태 카드에서 다시 요청해 주세요."
+        if message == "Another task is active":
+            return "⏸️ " + self._busy_text("처리하지")
+        expected = re.fullmatch(r"Expected (\w+), got (\w+)", message)
+        if expected:
+            return f"⚠️ 작업이 지금 <code>{esc(expected.group(2))}</code> 상태라 이 요청을 처리할 수 없습니다."
+        return f"⚠️ 처리하지 못했습니다: {esc(redact_text(message, 300))}"
+
     def _reconcile_tasks(self) -> None:
         for task in self.store.list_tasks_in_states(ACTIVE_STATES):
             task_id = task["id"]
@@ -452,6 +769,10 @@ class ChiefBot:
                 current = self.runner.reconcile(task_id)
                 if current != previous:
                     self._update_task_card(task_id, self._task_text(task_id))
+                if current in {"FAILED", "BLOCKED"}:
+                    # 작업자 단계 실패·한도 차단: 이유와 [다시 시도]/예약 버튼을 바로 보낸다.
+                    self._offer_retry(task_id)
+                    self.alerts.record_bot_notice(f"task:{task_id}:{current}", self.clock())
             refreshed_for_card = self.store.get_task(task_id)
             if refreshed_for_card["state"] == "RUNNING":
                 last = self.last_card_update.get(task_id, 0.0)
@@ -478,6 +799,8 @@ class ChiefBot:
                 continue
             if task["state"] == "READY":
                 self._offer_release(task_id, "merge")
+            elif task["state"] in {"FAILED", "BLOCKED"}:
+                self._offer_retry(task_id)
             else:
                 self._send(self._task_text(task_id))
             # 이미 알렸으니 감시기가 같은 전이를 다시 알리지 않게 남긴다.
@@ -547,6 +870,221 @@ class ChiefBot:
             task_id,
             f"🛑 <b>종료 확인</b>\n\n산출물은 보존했습니다: <code>{esc(task_id)}</code>",
         )
+
+    # ------------------------------------------------------------------ 재시도
+
+    def _retry_payload(self, task: dict[str, Any], action: str, run_at: str | None = None) -> dict[str, Any]:
+        payload = {
+            "task_id": task["id"],
+            "task_version": task["version"],
+            "action": action,
+            "mode": self.runner.retry_mode(task),
+        }
+        if run_at is not None:
+            payload["run_at"] = run_at
+        return payload
+
+    def _failure_summary(self, task: dict[str, Any]) -> tuple[str, datetime | None]:
+        """(사용자에게 보일 실패 이유 HTML, 한도가 풀리는 시각). 원문은 마스킹 후 짧게 자른다."""
+        run = self.store.latest_run(task["id"]) or {}
+        result = run.get("result") or {}
+        classification = str(result.get("classification") or "")
+        lines: list[str] = []
+        reset_at: datetime | None = None
+        if task["state"] == "BLOCKED" and classification == "LIMIT_BLOCKED":
+            error = str(result.get("error") or "")
+            reset_at = self._limit_reset_at(task, run, error)
+            lines.append("Claude 사용량 한도에 걸려 작업자가 일을 시작하지 못했습니다.")
+            if reset_at is not None:
+                local = reset_at.astimezone(self.alert_config.tz)
+                passed = " — 이미 지났습니다" if not reset_pending(reset_at, self.clock()) else ""
+                lines.append(f"풀리는 시각: <b>{local:%m/%d %H:%M}</b> (한국 시각){passed}")
+            else:
+                lines.append("풀리는 시각은 메시지에서 확인하지 못했습니다.")
+            lines.append(f"원문: <code>{esc(error[:200])}</code>")
+            return "\n".join(lines), reset_at
+        evidence_path = self.settings.state_dir / "evidence" / f"{task['id']}-verification.json"
+        try:
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            evidence = {}
+        worker_failed = classification and classification != "SUCCESS"
+        if worker_failed:
+            lines.append(f"작업자 실패: <code>{esc(classification)}</code>")
+            error = str(result.get("error") or "")
+            if error:
+                lines.append(f"<code>{esc(error[:300])}</code>")
+        elif evidence.get("verdict") in {"FAIL", "UNVERIFIED"}:
+            reason = str(evidence.get("reason") or "")
+            label = {
+                "One or more registered checks failed": "등록된 검증 명령 실패",
+                "Independent review did not pass": "독립 검토 불통과",
+                "Worker produced no file changes": "작업자가 파일을 바꾸지 않음",
+            }.get(reason, reason)
+            if evidence.get("verdict") == "UNVERIFIED":
+                label = "독립 검토를 하지 못함(검토 제공자 응답 없음) — 검증만 다시 할 수 있습니다"
+            lines.append(f"검증 결과: {esc(label)}")
+            for check in [item for item in evidence.get("checks", []) if not item.get("passed")][:2]:
+                command = " ".join(str(part) for part in check.get("argv") or [])
+                tail = "\n".join(str(check.get("output") or "").strip().splitlines()[-6:])
+                lines.append(f"• <code>{esc(command)}</code>\n<pre>{esc(tail[-500:])}</pre>")
+            if evidence.get("review_summary"):
+                lines.append(f"검토 요약({esc(evidence.get('review_verdict') or '')}): {esc(str(evidence['review_summary'])[:300])}")
+            for finding in (evidence.get("review_findings") or [])[:3]:
+                lines.append(f"• {esc(str(finding)[:200])}")
+        else:
+            lines.append(f"상태: {esc(task['state'])} (자세한 이유 기록 없음)")
+        return "\n".join(lines), None
+
+    def _limit_reset_at(self, task: dict[str, Any], run: dict[str, Any], error: str) -> datetime | None:
+        """한도가 풀리는 시각. "resets 9am" 같은 시각은 한도 메시지를 받은 때(실행 종료 시각) 기준으로 가장 가까운 시각이다.
+        지금 기준으로 읽으면 이미 지난 시각이 '내일 같은 시각'이 된다. 같은 작업 버전에 이미 예약을 제안했고
+        그 시각이 지났으면 그것을 우선한다(같은 문구를 다시 읽어 하루 뒤로 미루지 않는다)."""
+        now = self.clock()
+        reference = now
+        try:
+            ended = datetime.fromisoformat(str(run.get("ended_at") or ""))
+            if ended.tzinfo is not None and ended <= now:
+                reference = ended
+        except ValueError:
+            pass
+        reset_at = parse_reset_time(error, reference)
+        for run_at in self.store.proposed_retry_times(task["id"], int(task["version"])):
+            try:
+                proposed = datetime.fromisoformat(run_at) - RETRY_MARGIN
+            except ValueError:
+                continue
+            if proposed <= now and (reset_at is None or reset_at > now):
+                reset_at = proposed
+        return reset_at
+
+    def _offer_retry(self, task_id: str) -> None:
+        """실패·차단 카드: 이유 + [다시 시도] 또는 한도 해제 시각 예약 버튼(일회용 승인, 작업 버전에 묶임)."""
+        try:
+            task = self.store.get_task(task_id)
+        except KeyError:
+            self._send(f"작업을 찾지 못했습니다: <code>{esc(task_id)}</code>")
+            return
+        icon = "⛔" if task["state"] == "BLOCKED" else "❌"
+        reason, reset_at = self._failure_summary(task)
+        head = f"{icon} <b>{esc(task['state'])}</b> · <code>{esc(task_id)}</code> ({esc(task['project_id'])})\n\n{reason}"
+        allowed, why = self.runner.can_retry(task)
+        if not allowed:
+            self._send(_fit(head + f"\n\n{esc(why)}."))
+            return
+        used, budget = self.runner.retry_budget(task)
+        mode = self.runner.retry_mode(task)
+        now = self.clock()
+        if reset_at is not None and reset_pending(reset_at, now):
+            run_at = scheduled_time(reset_at)
+            payload = self._retry_payload(task, "schedule_retry", run_at.isoformat(timespec="seconds"))
+            label = f"⏰ {run_at.astimezone(self.alert_config.tz):%m/%d %H:%M} 에 다시 시도 예약"
+            action = "schedule_retry"
+            note = "한도가 풀리기 전이라 바로 다시 시도하지 않고 예약을 제안합니다. 누르면 그 시각에 봇이 한 번 다시 실행합니다."
+        else:
+            payload = self._retry_payload(task, "retry")
+            label = "🔁 검증 다시 시도" if mode == "verify" else "🔁 다시 시도"
+            action = "retry"
+            if mode == "verify":
+                verify_used, verify_cap = self.runner.verify_retry_budget(task)
+                note = f"작업자는 끝났고 검토만 못 했으니 검증만 다시 합니다. 검증 재시도 {verify_used}/{verify_cap}회 사용."
+            else:
+                note = f"이전 변경을 이어서 실패 이유를 고치게 합니다. 재시도 {used}/{budget}회 사용."
+            if reset_at is not None:
+                note = "한도가 풀리는 시각이 지났으니 바로 다시 시도할 수 있습니다. " + note
+        approval_id = self.store.create_approval(
+            task_id=task_id,
+            action=action,
+            payload=payload,
+            owner_user_id=self.settings.allowed_user_id,
+            chat_id=self.settings.allowed_chat_id,
+            task_version=task["version"],
+            ttl_seconds=self.settings.approval_ttl_seconds,
+        )
+        self._send(
+            _fit(head + f"\n\n{esc(note)}\n버튼 유효시간: {self.settings.approval_ttl_seconds // 60}분 · 다시 띄우기 <code>/retry {esc(task_id)}</code>"),
+            reply_markup=inline_keyboard([[(label, f"approve:{action}:{approval_id}")]]),
+        )
+
+    def _execute_retry(self, approval: dict[str, Any]) -> None:
+        task = self.store.get_task(approval["task_id"])
+        if approval["payload"] != self._retry_payload(task, "retry"):
+            raise ConflictError("Approved retry payload no longer matches task")
+        try:
+            started = self.runner.retry(task["id"], expected_version=approval["payload"]["task_version"])
+        except (RunnerError, ConflictError) as exc:
+            # 거절로 끝난 승인은 재시작 복구가 몰래 다시 실행하지 않는다. 다시 하려면 /retry 로 새 버튼을 띄운다.
+            self.store.set_approval_outcome(approval["id"], "REFUSED", f"{type(exc).__name__}: {exc}")
+            if str(exc) == "Another task is active":
+                why = esc(self._busy_text("시작하지"))
+            elif isinstance(exc, RunnerError) and not str(exc).isascii():
+                why = esc(exc)  # can_retry 의 한국어 사유(재시도 한도 등)
+            else:
+                why = self._refusal_text(exc)
+            self._send(
+                f"🔁 다시 시도하지 못했습니다: <code>{esc(task['id'])}</code>\n{why}\n"
+                f"다시 하려면 <code>/retry {esc(task['id'])}</code>"
+            )
+            return
+        if started["state"] == "VERIFYING":
+            self._send(f"🔁 검증을 다시 시작합니다: <code>{esc(task['id'])}</code>")
+            return
+        self._update_task_card(
+            started["id"], self._task_text(started["id"]), reply_markup=self._running_keyboard(started["id"])
+        )
+
+    def _accept_scheduled_retry(self, approval: dict[str, Any]) -> None:
+        task = self.store.get_task(approval["task_id"])
+        run_at = str(approval["payload"].get("run_at") or "")
+        if approval["payload"] != self._retry_payload(task, "schedule_retry", run_at):
+            raise ConflictError("Approved retry payload no longer matches task")
+        self.store.schedule_retry(
+            task_id=task["id"],
+            approval_id=approval["id"],
+            task_version=int(task["version"]),
+            run_at=run_at,
+            note="limit reset",
+        )
+        local = datetime.fromisoformat(run_at).astimezone(self.alert_config.tz)
+        self._send(
+            f"⏰ 예약했습니다: <code>{esc(task['id'])}</code> 를 <b>{local:%m/%d %H:%M}</b> 에 한 번 다시 시도합니다.\n"
+            "그 사이 작업이 바뀌면(중단·다른 재시도) 예약은 실행하지 않습니다."
+        )
+
+    def _run_scheduled_retries(self) -> None:
+        now = self.clock()
+        for item in self.store.due_retries(now.isoformat(timespec="seconds")):
+            try:
+                task = self.store.get_task(item["task_id"])
+            except KeyError:
+                self.store.finish_scheduled_retry(item["id"], "SKIPPED", "task missing")
+                continue
+            if int(task["version"]) != int(item["task_version"]) or task["state"] not in {"FAILED", "BLOCKED"}:
+                self.store.finish_scheduled_retry(item["id"], "SKIPPED", f"task is {task['state']}")
+                continue
+            if self.store.active_task_count() >= self.settings.max_active_tasks:
+                continue  # 다른 작업이 끝나면 다음 루프에서 실행한다
+            if not self.store.finish_scheduled_retry(item["id"], "STARTED"):
+                continue
+            try:
+                started = self.runner.retry(task["id"], expected_version=item["task_version"])
+            except (RunnerError, ConflictError) as exc:
+                self.store.finish_scheduled_retry(item["id"], "FAILED", str(exc))
+                self._notify(
+                    f"scheduled-retry-{item['id']}",
+                    f"⚠️ 예약한 재시도를 실행하지 못했습니다: <code>{esc(task['id'])}</code> · {esc(exc)}",
+                )
+                continue
+            self._notify(
+                f"scheduled-retry-{item['id']}",
+                f"⏰ 예약한 재시도를 시작했습니다: <code>{esc(task['id'])}</code> · {esc(started['state'])}",
+            )
+
+    @property
+    def hub_todo(self) -> HubTodo:
+        """agent-hub 할 일. 테스트는 self._hub_todo 를 바꿔 끼운다."""
+        override = getattr(self, "_hub_todo", None)
+        return override if override is not None else HubTodo(self.paths.agent_hub)
 
     def _start_payload(self, task: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -640,13 +1178,25 @@ class ChiefBot:
         text += "\n\n<b>미확인</b>\n"
         text += "• 없음" if task["state"] in {"READY", "CANCELLED"} else "• 최종 반영 전"
         text += "\n\n<b>다음 행동</b>\n"
-        text += "• 병합 승인" if task["state"] == "READY" else "• 상태 카드의 가능한 동작 확인"
+        if task["state"] == "READY":
+            text += "• 병합 승인"
+        elif task["state"] in {"FAILED", "BLOCKED"}:
+            text += f"• 이유 확인·다시 시도: <code>/retry {esc(task_id)}</code>"
+        else:
+            text += "• 상태 카드의 가능한 동작 확인"
         return text
 
     def _task_confirmation_text(self, task: dict[str, Any]) -> str:
         spec = task["specification"]
         boundaries = "\n".join(f"• {esc(item)}" for item in spec.get("boundaries", [])) or "• 없음"
         acceptance = "\n".join(f"• {esc(item)}" for item in spec.get("acceptance", [])) or "• 등록된 검증 통과"
+        attachments = self.store.attachments_for_task(task["id"])
+        attached = (
+            "\n\n<b>첨부</b> (작업 폴더 .chief-inbox/, 커밋 안 됨)\n"
+            + "\n".join(f"• {esc(describe(item))}" for item in attachments)
+            if attachments
+            else ""
+        )
         return (
             "<b>작업 발주 확인</b>\n\n"
             f"ID: <code>{esc(task['id'])}</code>\n"
@@ -655,6 +1205,7 @@ class ChiefBot:
             f"산출물: {esc(spec.get('output_format', ''))}\n\n"
             f"<b>범위 밖</b>\n{boundaries}\n\n"
             f"<b>완료 기준</b>\n{acceptance}"
+            + attached
         )
 
     def _operation_text(self, operation: dict[str, Any]) -> str:
@@ -695,7 +1246,11 @@ class ChiefBot:
             "/quiet 2h — 잠시 조용히(최대 12시간, /quiet off 해제)\n"
             "/alerts on|off — 먼저 알리기 켜기(조용히도 해제)·끄기, /alerts 현재 설정\n"
             "   off 여도 치명적인 알림(컨테이너 멈춤·디스크·메모리 부족)은 즉시, 아침 요약은 계속 옵니다\n"
-            "/brief — 아침 요약 미리 보기\n\n"
+            "/brief — 아침 요약 미리 보기\n"
+            "/retry T-... — 실패·차단 작업 다시 시도(버튼 승인)\n"
+            "/todo codex 할 일 — Codex·Claude 에게 할 일 남기기(/todo 목록, /todo done 번호)\n"
+            "사진·문서 + 설명 — 첨부로 작업 발주(캡션 없으면 무엇을 할지 묻습니다)\n"
+            f"/new 프로젝트: 내용 — 프로젝트 지정 발주({esc(', '.join(self.settings.projects))}, 기본 {esc(self.policy.default_project)})\n\n"
             "그 밖의 말은 대화로 답합니다. 작업 착수·중단·병합·Push·배포는 항상 버튼 승인을 거칩니다.\n"
             "작업·서버 상태가 바뀌면 먼저 알립니다(23:00–07:00 은 치명적인 것만, 나머지는 08:30 요약)."
         )
@@ -706,8 +1261,10 @@ class ChiefBot:
         logs = recent_hub_logs(self.paths, 5, 300)
         lock_lines = [f"• {esc(item)}" for item in locks] or ["• 없음"]
         log_lines = [f"• <code>{esc(item['file'][:15])}</code> {esc(item['text'])}" for item in logs] or ["• 기록 없음"]
+        handoffs = self._handoff_lines()
         return _fit(
-            "<b>공용 작업 잠금</b>\n" + "\n".join(lock_lines)
+            (handoffs + "\n" if handoffs else "")
+            + "<b>공용 작업 잠금</b>\n" + "\n".join(lock_lines)
             + "\n\n<b>최근 작업 기록</b>\n" + "\n".join(log_lines)
             + "\n\n<b>BOARD 요약</b>\n<pre>" + esc(board) + "</pre>"
         )
@@ -813,6 +1370,10 @@ class ChiefBot:
             self.brief_tick()
         except Exception as exc:
             LOG.error("Morning brief failed: %s", type(exc).__name__)
+        try:
+            self._check_handoffs()
+        except Exception as exc:
+            LOG.error("Hand-off check failed: %s", type(exc).__name__)
 
     def watch_tick(
         self, now: datetime | None = None, observation: Observation | None = None
@@ -1449,14 +2010,36 @@ class ChiefBot:
 
 
 # 승인 없이 바로 처리되는 대화 동작과, 모델이 승인이 필요한 것처럼 말했을 때 대신 쓸 문장
-IMMEDIATE_INTENTS = {"alerts", "quiet", "files"}
+IMMEDIATE_INTENTS = {"alerts", "quiet", "files", "todo_add", "visual_request"}
 IMMEDIATE_REPLIES = {
+    "todo_add": "할 일 목록에 바로 남깁니다. 결과는 아래에 알려 드릴게요.",
+    "visual_request": "Codex 에게 시안 요청을 바로 넘깁니다. 추적 ID 는 아래에 알려 드릴게요.",
     "alerts": "알림 설정을 바로 적용합니다. 실제 저장된 설정은 아래와 같습니다.",
     "quiet": "알림 설정을 바로 적용합니다. 실제 저장된 설정은 아래와 같습니다.",
     "files": "결과물 목록을 띄웁니다. 받을 파일 버튼을 누르면 그 파일이 갑니다.",
 }
 APPROVAL_CLAIM_RE = re.compile(r"승인|카드")
+PENDING_ATTACHMENT_WINDOW = timedelta(minutes=30)
 CALLBACK_RE = re.compile(r"(al|jf|jl|f|q):(\d{1,9})")
+
+
+# 처리 구분(SYSTEM_SPEC.md): A 직접 답함 · B 직접 실행(승인) · C 넘기고 결과를 받아 옴 · D 대표가 직접 · E 거절.
+HANDLING_BY_INTENT = {
+    **{intent: "A" for intent in (
+        "help", "usage", "status", "list_tasks", "task_detail", "jobs", "files", "logs", "hub", "git", "work",
+        "model", "brief", "quiet", "alerts", "todo_list",
+    )},
+    **{intent: "B" for intent in ("create_task", "retry", "stop_task", "merge", "push", "deploy")},
+    **{intent: "C" for intent in ("todo_add", "todo_done", "visual_request", "visual_suggest")},
+    "ask_project": "D",
+}
+
+
+def handling_class(decision: Decision | None, model_handling: str | None = None) -> str:
+    """실제로 받아들인 결정으로 처리 구분을 정한다. 동작이 없으면 모델이 밝힌 A·D·E 를 쓰고, 모르면 A."""
+    if decision is not None and decision.intent in HANDLING_BY_INTENT:
+        return HANDLING_BY_INTENT[decision.intent]
+    return model_handling if model_handling in {"A", "D", "E"} else "A"
 
 
 def _button_label(text: str, limit: int = 48) -> str:

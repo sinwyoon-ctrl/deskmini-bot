@@ -69,7 +69,63 @@ sudo loginctl enable-linger ionenet
 - `/alerts`: 알림 설정·최근 알림 · `/alerts on|off` (on 은 조용히도 해제, off 여도 치명적인 알림·아침 요약은 옴)
 - `/brief`: 아침 요약 미리 보기
 
-`/new`, `/task`, `/stop` 을 인자 없이 보내면 사용법을 답한다. 슬래시 명령은 LLM을 부르지 않는다.
+- `/retry T-...`: 실패·차단 작업의 이유와 [다시 시도] 버튼(또는 한도 해제 시각 예약 버튼)을 다시 띄운다
+- `/todo codex 할 일` · `/todo claude …` · `/todo any …`: agent-hub 할 일 남기기(커밋·push), `/todo` 목록, `/todo done 번호|ID`
+
+`/new`, `/task`, `/stop`, `/retry` 을 인자 없이 보내면 사용법을 답한다. 슬래시 명령은 LLM을 부르지 않는다.
+
+## 프로젝트 지정
+
+`config/projects.toml` 의 첫 항목(deskmini)이 기본 프로젝트다. 다른 프로젝트는 `/new sandbox: 할 일`(또는 `/new sandbox 할 일`,
+`작업: sandbox: 할 일`)처럼 앞에 ID 를 붙인다. 대화 발주에서 모델이 프로젝트를 정하지 않으면(null) 기본 프로젝트로 발주 카드가 뜨고,
+카드에 프로젝트가 보이므로 착수 전에 취소할 수 있다. 등록되지 않은 ID 를 모델이 내면 발주하지 않는다.
+
+`sandbox`(`~/sandbox-chief`, 원격 없음, 배포 없음)는 실제 처리 경로 시험용 연습 저장소다. 병합까지 해도 운영과 무관하다.
+
+## 재시도
+
+FAILED·BLOCKED 가 되면 이유(작업자 오류, 실패한 검증 명령 끝부분, 검토 요약)와 버튼을 바로 보낸다. 버튼은 작업 버전에 묶인 일회용 승인이다.
+
+- 작업자 단계 실패·검증 실패: [🔁 다시 시도] → 같은 worktree 를 이어서 쓰는 새 실행 차수(runs.attempt+1). 이전 실패 요약을
+  mission 의 `previous_attempt` 로 넘긴다. 작업 `budget.retries`(기본 1)를 넘으면 버튼 대신 "새로 발주" 안내.
+- 작업자는 끝났는데 독립 검토를 못 한 경우(검토 제공자 응답 없음·UNVERIFIED): [🔁 검증 다시 시도] → 작업자를 다시 돌리지 않고 검증만.
+- 사용량 한도(LIMIT_BLOCKED): 오류 문구의 `resets 3pm (Asia/Seoul)`·`resets 3am (UTC)`·`resets Oct 10, 10:30pm (…)`·`resets in 2 hours`
+  에서 풀리는 시각을 읽어 알려 주고, 그 전에는 [⏰ 시각+5분 에 다시 시도 예약] 버튼만 준다. 누르면 `scheduled_retries` 에 저장되고
+  메인 루프가 그 시각에 한 번 실행한다(그 사이 작업 버전이 바뀌면 실행하지 않음). 한도 차단 실행은 재시도 횟수에 세지 않는다.
+
+## 사진·문서로 지시
+
+사진(가장 큰 크기)·문서를 받으면 `getFile` 로 내려받아 `state/inbox/<날짜>/` 에 0600 으로 저장하고 `attachments` 테이블에 남긴다.
+
+- 20MB 이하, jpg·png·webp·pdf·txt·md·csv·json 만. zip·실행 파일·스크립트·오피스 문서는 거부. 내용 서명(매직 바이트, UTF-8·NUL 없음)이
+  확장자와 맞아야 하고 ELF·PE·셔뱅·zip 서명은 확장자와 무관하게 거부. 이름은 정리하고 숨김·비밀처럼 보이는 이름은 거부
+- 캡션이 있으면 캡션 + `[첨부: 이름, 형식, 크기]`(텍스트는 마스킹된 앞부분 1,500자)를 대화층에 준다. 캡션이 `/new …` 면 바로 발주 카드
+- 캡션이 없으면 무엇을 할지 묻고, 30분 안의 다음 지시(발주)에 붙인다
+- 발주 카드에 첨부 목록이 보이고, 착수 때 worktree `.chief-inbox/` 에 읽기 전용(0444)으로 복사한다(텍스트는 마스킹 사본).
+  Git 공용 `info/exclude` 에 `/.chief-inbox/` 를 넣어 커밋되지 않는다. mission 에 `attachments` 로 알린다. 독립 검토도 텍스트 첨부 내용을 받는다
+- 이미지는 이번 라운드에서 대화 모델(Gemini·Claude API)에 보내지 않는다(메타데이터만). 작업자(Claude CLI)는 worktree 의 첨부를 읽을 수 있다
+
+## 작업 배분(agent-hub 할 일)
+
+`/todo codex 할 일` 이나 자연어("코덱스한테 ○○ 남겨 둬" → 대화 동작 `dispatch_todo`)는 승인 없이 `~/agent-hub/bin/hub todo add <대상> "<내용>" --from telegram`
+을 고정 argv 로 부른다(셸 없음, 마스킹·한 줄·500자). hub 가 `todo/<시각>-<호스트>-<대상>.md` 를 쓰고 커밋·push 한다. 다른 PC 의 Codex·Claude 는
+`hub read` 맨 위 "열린 할 일"에서 본다. 봇 서비스는 `~/agent-hub` 에 쓸 수 있어야 한다(ReadWritePaths).
+
+## 독립 검토 제공자
+
+`config/models.toml` `[review] provider` = `gemini`(기본) | `claude_cli`. `claude_cli` 는 로컬 Claude Code CLI(구독, API 키 없음)를 작업자와 같은
+Bubblewrap 격리(빈 임시 홈, 자격 증명 파일만 읽기 전용, 도구 없음)에서 `systemd-run --user` 로 실행한다. 검토를 못 하면 READY 가 아니라 BLOCKED.
+
+## 실제 처리 경로 시험(E2E)
+
+```bash
+XDG_RUNTIME_DIR=/run/user/$(id -u) .venv/bin/python sim/e2e_real.py "할 일" ["할 일2" …] [--no-merge] [--attach 파일]
+XDG_RUNTIME_DIR=/run/user/$(id -u) .venv/bin/python sim/e2e_real.py --state <상태폴더> --retry T-... x
+```
+
+sandbox 프로젝트만 대상으로, 별도 상태 폴더(`~/.local/state/deskmini-chief-e2e/<시각>`)에서 실제 runner·worker·verify·release 를 돈다.
+Telegram 은 기록기, Gemini 는 호출 시 예외, 검토는 Claude CLI. 버튼은 봇이 띄운 callback_data 를 그대로 눌러 승인 경로를 확인한다.
+작업자 Claude 실행 1회씩 쓰므로 구독 한도를 확인하고 돌린다.
 
 ## 먼저 알리기(감시기)
 

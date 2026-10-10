@@ -235,12 +235,17 @@ class DeliverableSafetyTests(BotFixture):
             self.assertEqual(handle.read(), b"MP4DATA")
         outside = Path(self.temp.name) / "outside.mp4"
         outside.write_bytes(b"LOOT-7B")
+        original_inode = target.stat().st_ino
+        # 원래 파일을 열어 둬 inode 가 해제·재사용되지 않게 한다(ext4 는 지운 inode 번호를 바로 다시 쓸 수 있다).
+        keep_alive = open(target, "rb")  # noqa: SIM115
+        self.addCleanup(keep_alive.close)
         target.unlink()
         target.symlink_to(outside)
         with self.assertRaises(OSError):
             open_checked(check, self.bot.file_roots)
         target.unlink()
         target.write_bytes(b"OTHER7B")  # 같은 크기의 다른 일반 파일(inode 다름)
+        self.assertNotEqual(target.stat().st_ino, original_inode)
         with self.assertRaises(OSError):
             open_checked(check, self.bot.file_roots)
 

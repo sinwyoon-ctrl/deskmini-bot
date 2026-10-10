@@ -69,6 +69,34 @@ class TelegramAPI:
             )
         return body.get("result")
 
+    def get_file(self, file_id: str) -> dict[str, Any]:
+        """getFile → {file_id, file_size, file_path}. 봇 API 는 20MB 까지만 내려받을 수 있다."""
+        return self._call("getFile", {"file_id": file_id})
+
+    def download_file(self, file_path: str, max_bytes: int) -> bytes:
+        """getFile 의 file_path 를 내려받는다. 크기 상한을 넘으면 중간에 끊고 TelegramError."""
+        if not FILE_PATH_RE.fullmatch(file_path or "") or ".." in file_path:
+            raise TelegramError("Unexpected Telegram file path")
+        url = self._base_url.replace("/bot", "/file/bot", 1) + "/" + urllib.parse.quote(file_path)
+        request = urllib.request.Request(url, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=max(self.request_timeout, 60)) as response:
+                chunks: list[bytes] = []
+                total = 0
+                while True:
+                    chunk = response.read(65_536)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise TelegramError("File exceeds the size limit", error_code=413)
+                    chunks.append(chunk)
+        except urllib.error.HTTPError as exc:
+            raise TelegramError(f"HTTP {exc.code}", error_code=exc.code) from exc
+        except (OSError, ValueError) as exc:
+            raise TelegramError(f"Telegram download failed: {type(exc).__name__}") from exc
+        return b"".join(chunks)
+
     def get_me(self) -> dict[str, Any]:
         return self._call("getMe")
 
@@ -176,6 +204,7 @@ def inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
 
 
 
+FILE_PATH_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]{0,200}$")
 UPLOAD_METHODS = {
     "video": ("sendVideo", "video"),
     "photo": ("sendPhoto", "photo"),

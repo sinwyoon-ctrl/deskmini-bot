@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -6,11 +7,11 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from adapters.gemini_rest import ReviewResult
+from adapters.gemini_rest import InterpretationUnavailable, ReviewResult
 from app.config import ProjectConfig, Settings
 from app.release import ReleaseManager
 from app.state import StateStore
-from app.verify import Verifier
+from app.verify import FallbackReviewer, Verifier
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -23,6 +24,11 @@ def git(cwd: Path, *args: str) -> str:
         check=True,
     )
     return result.stdout.strip()
+
+
+class UnavailableReviewer:
+    def review_diff(self, **kwargs):
+        raise InterpretationUnavailable("gemini quota exhausted")
 
 
 class PassingReviewer:
@@ -124,13 +130,18 @@ class ReleaseIntegrationTests(unittest.TestCase):
         )
         self.store.transition(task["id"], expected_state="STARTING", new_state="RUNNING")
         self.store.transition(task["id"], expected_state="RUNNING", new_state="VERIFYING")
-        ready = Verifier(self.settings, self.store, PassingReviewer()).verify(task["id"])
+        # 첫 검토자(gemini 자리)가 할당량 소진으로 못 하면 다음 검토자가 판정하고, 증거에 누가 했는지 남는다.
+        reviewer = FallbackReviewer([("gemini", UnavailableReviewer()), ("claude_cli", PassingReviewer())])
+        ready = Verifier(self.settings, self.store, reviewer).verify(task["id"])
         self.assertEqual(
             ready["state"],
             "READY",
             self.store.recent_events(task["id"], limit=3),
         )
         self.assertNotEqual(ready["head_sha"], self.base_sha)
+        evidence = json.loads((self.state_dir / "evidence" / f"{task['id']}-verification.json").read_text())
+        self.assertEqual(evidence["review"]["reviewer"], "claude_cli")
+        self.assertIn("quota exhausted", evidence["review"]["fallbacks"][0])
 
         manager = ReleaseManager(self.settings, self.store)
         for action in ("merge", "push", "deploy"):

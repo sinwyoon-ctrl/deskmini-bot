@@ -16,7 +16,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/ionenet/.local/state/deskmini-chief /home/ionenet/deskmini
+ReadWritePaths=/home/ionenet/.local/state/deskmini-chief /home/ionenet/deskmini /home/ionenet/sandbox-chief /home/ionenet/agent-hub
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LockPersonality=yes
 

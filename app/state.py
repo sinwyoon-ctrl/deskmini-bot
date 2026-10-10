@@ -83,6 +83,13 @@ class StateStore:
             connection.execute("ALTER TABLE inbox ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
         if "last_error" not in inbox_columns:
             connection.execute("ALTER TABLE inbox ADD COLUMN last_error TEXT")
+        approval_columns = {row[1] for row in connection.execute("PRAGMA table_info(approvals)")}
+        for column in ("outcome", "outcome_at", "outcome_note"):
+            if column not in approval_columns:
+                connection.execute(f"ALTER TABLE approvals ADD COLUMN {column} TEXT")
+        attachment_columns = {row[1] for row in connection.execute("PRAGMA table_info(attachments)")}
+        if "file_unique_id" not in attachment_columns:
+            connection.execute("ALTER TABLE attachments ADD COLUMN file_unique_id TEXT")
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
@@ -391,7 +398,18 @@ class StateStore:
             ).fetchone()
         return self.get_operation(row["id"]) if row else None
 
+    def set_approval_outcome(self, approval_id: str, outcome: str, note: str = "") -> bool:
+        """소비된 승인의 실행 결과를 남긴다(처음 기록만 유효). 기록이 있으면 재시작 복구가 다시 실행하지 않는다."""
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE approvals SET outcome=?, outcome_at=?, outcome_note=? WHERE id=? AND outcome IS NULL",
+                (outcome, utc_now(), redact_text(note, 300) or None, approval_id),
+            )
+            return cursor.rowcount == 1
+
     def recoverable_consumed_approvals(self) -> list[dict[str, Any]]:
+        """소비됐지만 실행 시도 기록(outcome)이 없는 승인 = 소비 직후 크래시. 작업 버전이 그대로인 것만.
+        유효시간(expires_at) 확인은 호출하는 쪽이 한다(지났으면 ABANDONED 로 남기고 사용자에게 알린다)."""
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -399,9 +417,13 @@ class StateStore:
                 JOIN tasks t ON t.id=a.task_id
                 LEFT JOIN operations o ON o.approval_id=a.id
                 WHERE a.consumed_at IS NOT NULL
+                  AND a.outcome IS NULL
                   AND o.id IS NULL
+                  AND t.version=a.task_version
                   AND (
                     (a.action='start' AND t.state='AWAITING_START') OR
+                    (a.action IN ('retry','schedule_retry') AND t.state IN ('FAILED','BLOCKED')
+                        AND NOT EXISTS (SELECT 1 FROM scheduled_retries s WHERE s.approval_id=a.id)) OR
                     (a.action IN ('merge','push','deploy') AND t.state='READY')
                   )
                 ORDER BY a.created_at
@@ -484,6 +506,13 @@ class StateStore:
             ).fetchall()
         return [self.get_operation(row["id"]) for row in rows]
 
+    def list_operations_for_task(self, task_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM operations WHERE task_id=? ORDER BY created_at, rowid", (task_id,)
+            ).fetchall()
+        return [self.get_operation(row["id"]) for row in rows]
+
     def finish_operation(
         self,
         operation_id: str,
@@ -548,6 +577,13 @@ class StateStore:
                 (run_id, task_id, attempt, unit_name, boot_id, requested_model, utc_now(), utc_now()),
             )
         return self.get_run(run_id)
+
+    def list_runs(self, task_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM runs WHERE task_id=? ORDER BY attempt", (task_id,)
+            ).fetchall()
+        return [self.get_run(row["id"]) for row in rows]
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         with self.connect() as connection:
@@ -757,3 +793,154 @@ class StateStore:
             item["payload"] = json.loads(item.pop("payload_json"))
             result.append(item)
         return result
+
+    # ------------------------------------------------------------------ 첨부
+
+    def attachment_for_file(self, update_id: int, file_key: str) -> dict[str, Any] | None:
+        """같은 update 의 같은 파일(file_unique_id, 없으면 file_id)이 이미 저장됐으면 그 행. 크래시 재생 때 중복 저장 방지."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM attachments WHERE update_id=? AND file_unique_id=? ORDER BY id LIMIT 1",
+                (update_id, file_key),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def add_attachment(
+        self,
+        *,
+        update_id: int | None,
+        chat_id: int,
+        kind: str,
+        original_name: str,
+        stored_name: str,
+        stored_path: str,
+        mime: str | None,
+        size: int,
+        sha256: str,
+        caption: str | None,
+        file_unique_id: str | None = None,
+    ) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO attachments(
+                    update_id, chat_id, kind, original_name, stored_name, stored_path, mime, size, sha256,
+                    caption, created_at, file_unique_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    update_id,
+                    chat_id,
+                    kind,
+                    redact_text(original_name, 200),
+                    stored_name,
+                    stored_path,
+                    (mime or "")[:100] or None,
+                    int(size),
+                    sha256,
+                    redact_text(caption or "", 1_000) or None,
+                    utc_now(),
+                    file_unique_id,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def get_attachment(self, attachment_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM attachments WHERE id=?", (attachment_id,)).fetchone()
+        return dict(row) if row else None
+
+    def attachments_for_update(self, update_id: int) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM attachments WHERE update_id=? ORDER BY id", (update_id,)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def pending_attachments(self, chat_id: int, since: str, limit: int = 5) -> list[dict[str, Any]]:
+        """아직 작업에 연결되지 않은 최근 첨부(캡션 없이 보낸 뒤 다음 메시지로 지시하는 경우)."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM attachments
+                WHERE chat_id=? AND task_id IS NULL AND created_at >= ?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (chat_id, since, limit),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
+    def link_attachments(self, task_id: str, attachment_ids: list[int]) -> None:
+        if not attachment_ids:
+            return
+        with self.connect() as connection:
+            connection.executemany(
+                "UPDATE attachments SET task_id=? WHERE id=? AND task_id IS NULL",
+                [(task_id, attachment_id) for attachment_id in attachment_ids],
+            )
+
+    def attachments_for_task(self, task_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM attachments WHERE task_id=? ORDER BY id", (task_id,)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------ 예약 재시도
+
+    def schedule_retry(self, *, task_id: str, approval_id: str, task_version: int, run_at: str, note: str = "") -> int:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE scheduled_retries SET state='REPLACED', finished_at=? WHERE task_id=? AND state='PENDING'",
+                (utc_now(), task_id),
+            )
+            cursor = connection.execute(
+                """
+                INSERT INTO scheduled_retries(task_id, approval_id, task_version, run_at, state, note, created_at)
+                VALUES (?, ?, ?, ?, 'PENDING', ?, ?)
+                """,
+                (task_id, approval_id, task_version, run_at, redact_text(note, 300), utc_now()),
+            )
+            return int(cursor.lastrowid)
+
+    def proposed_retry_times(self, task_id: str, task_version: int) -> list[str]:
+        """이 작업 버전에 제안했던 예약 재시도 시각(run_at)들. 한도가 이미 풀렸는지 판단할 때 쓴다."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM approvals WHERE task_id=? AND action='schedule_retry' AND task_version=?",
+                (task_id, task_version),
+            ).fetchall()
+        times = [str(json.loads(row["payload_json"]).get("run_at") or "") for row in rows]
+        return [value for value in times if value]
+
+    def count_task_events(self, task_id: str, event_type: str) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS n FROM events WHERE task_id=? AND event_type=?", (task_id, event_type)
+            ).fetchone()
+        return int(row["n"])
+
+    def due_retries(self, now: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM scheduled_retries WHERE state='PENDING' AND run_at <= ? ORDER BY run_at, id",
+                (now,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def pending_retry_for_task(self, task_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM scheduled_retries WHERE task_id=? AND state='PENDING' ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def finish_scheduled_retry(self, retry_id: int, state: str, note: str = "") -> bool:
+        """PENDING 인 것만 끝낸다(두 번 실행 방지). 바꿨으면 True."""
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE scheduled_retries SET state=?, note=?, finished_at=? WHERE id=? AND state='PENDING'",
+                (state, redact_text(note, 300), utc_now(), retry_id),
+            )
+            return cursor.rowcount == 1

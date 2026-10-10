@@ -16,3 +16,13 @@ effort = "low"
 max_tokens = 2000
 timeout_seconds = 60
 history_turns = 10
+
+# 독립 검토(검증 마지막 단계). providers 를 앞부터 시도하고, 못 하면(할당량·네트워크·CLI 없음) 다음으로 넘어간다.
+# "gemini" = Gemini REST(무료 할당량 하루 약 20회), "claude_cli" = 로컬 Claude Code CLI(구독, API 키 미사용,
+# 작업자와 같은 Bubblewrap 격리·도구 없음). 실제로 판정한 검토자는 검증 증거의 reviewer 에 남는다.
+# 모두 못 하면 작업은 READY 가 아니라 BLOCKED(검토 불가)가 된다. 예전 provider = "…" 한 개 설정도 읽는다.
+[review]
+providers = ["gemini", "claude_cli"]
+model = "sonnet"
+effort = "low"
+timeout_seconds = 300

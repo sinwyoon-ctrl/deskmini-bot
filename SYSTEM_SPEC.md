@@ -4,13 +4,14 @@
 
 Telegram을 주 인터페이스로 사용해 DeskMini의 확인 가능한 상태를 보고하고, 사용자가 승인한 작업을
 격리된 작업공간에서 실행한다. 대화 모델(Claude API 우선, Gemini 폴백)은 읽기 전용 상태 스냅샷을 근거로
-답하고 동작을 *제안*만 한다. Gemini는 변경 검토도 담당하고, Claude Code 작업자는 등록된 작업공간의
+답하고 동작을 *제안*만 한다. 독립 변경 검토는 설정한 검토 제공자(Gemini 기본, 또는 격리된 Claude CLI)가 맡고, Claude Code 작업자는 등록된 작업공간의
 구현만 담당한다. 권한·상태 전이·승인은 Python 정책 코드가 결정한다.
 
 ## 대화 모델 경계
 
 - 모델 출력은 비신뢰 데이터다. `reply` 는 마스킹·HTML 이스케이프 후 그대로 보여 줄 뿐 실행하지 않는다.
-- `action` 은 허용 목록(create_task, stop_task, task_detail, merge, push, deploy, send_files, set_alerts, none) 밖이면 버린다.
+- `action` 은 허용 목록(create_task, stop_task, task_detail, merge, push, deploy, send_files, set_alerts, dispatch_todo, visual_request, none) 밖이면 버린다.
+  dispatch_todo 는 agent-hub 할 일 기록(되돌릴 수 있는 기록)이라 승인 없이 고정 argv 로 hub 를 부르고 결과를 답한다.
   작업 ID 형식이 틀리면 버린다.
 - 허용된 제안도 기존 경로로만 간다: 발주는 착수 승인 카드, 중단은 중단 버튼, 병합·push·배포는 각각 일회용 승인 카드.
   모델 응답만으로 작업을 시작·중단·반영하지 않는다.
@@ -18,6 +19,29 @@ Telegram을 주 인터페이스로 사용해 DeskMini의 확인 가능한 상태
 - 상태 스냅샷은 고정 argv 명령과 파일 읽기로만 만들고, 마스킹 후 길이를 제한한다.
 - 모든 대화 판단은 제공자·모델·제안 동작·채택 여부·지연·토큰 사용량을 이벤트로 남긴다.
 - Claude API 키는 env 파일에서 호출마다 읽어 SDK 클라이언트에만 넘기며 프로세스 환경·로그·DB에 넣지 않는다.
+
+## 처리 구분 (모든 요청)
+
+봇은 요청마다 다섯 가지 중 하나로 처리하고 답변에서 어떻게 처리하는지 밝힌다. 대화 판단 이벤트(CHAT_DECISION)에
+`handling_class`(실제로 받아들인 결정 기준)와 `model_handling`(모델이 밝힌 값)을 남긴다.
+
+| 구분 | 뜻 | 예 |
+|---|---|---|
+| A 직접 답함 | 읽기 전용 조회·일반 질문 | /status, /jobs, /files, /logs, /hub, /git, /brief |
+| B 직접 실행(승인 필요) | 등록 저장소 코드 작업·재시도·병합/push/배포·중단 | /new, [다시 시도], merge 카드 |
+| C 넘기고 결과를 받아 옴 | 작업자가 못 하는 일(시각·디자인·모션·판단) → Codex | visual_request(/visual), dispatch_todo(/todo codex) |
+| D 대표가 직접 해야 함 | sudo, 로그인·OAuth, API 키 입력, GitHub 저장소 만들기, 저장소 등록, 물리 작업 | 할 일을 정확히 안내 |
+| E 거절 | 서버 규칙 위반 | 운영 사이트 수정, 컨테이너 중지 |
+
+- 능력 지도: 작업자는 등록 저장소(projects.toml 의 `description` 으로 무엇인지 표시) 파일만 고친다. 영상·이미지 렌더, 디자인 시안,
+  MCP·claude.ai 커넥터·외부 도구는 쓰지 않는다(`--strict-mcp-config`, 빈 `--mcp-config`, `disableClaudeAiConnectors`,
+  `ENABLE_CLAUDEAI_MCP_SERVERS=false`).
+- 발주 방어: 목표가 영상·모션·이미지·디자인 결과물이면 발주 카드를 만들지 않고 `/visual` 을 제안한다. 프로젝트를 말하지 않은 발주가
+  사이트·브랜드 작업처럼 어느 등록 저장소 설명과도 맞지 않으면 기본 프로젝트로 보내지 않고 묻는다.
+- visual_request: `~/agent-hub/visual/<프로젝트|general>/<요청ID>/request.md`(kind=concept)를 만들고 고정 argv 로
+  `hub todo add codex …` 를 부른다(승인 없음). 답변에 받는 쪽·요청 ID·할 일 ID·결과가 돌아오는 방법을 쓴다.
+- 결과 받아 오기: 감시 주기마다 봇이 넘긴 일(HANDOFF_CREATED)을 보고, card.md 가 생기면 결론 한 줄을, 할 일이 닫히면 닫힘을
+  한 번씩 알린다. `/todo`·`/hub` 에 넘긴 일과 상태(진행 전/중·끝남·결과 도착)가 보인다. 이미지 묶음 전송은 아직 없다.
 
 ## 감시·결과물 전송 경계
 
@@ -32,6 +56,16 @@ Telegram을 주 인터페이스로 사용해 DeskMini의 확인 가능한 상태
   숨김·비밀 이름 거부, 확장자 허용 목록, 일반 파일, 50MB 이하. 목록을 띄울 때와 보내기 직전에 두 번 검사한다.
 - 결과물 전송은 읽기 전용이라 승인 카드가 없지만, 대화 모델은 목록 버튼을 띄우는 동작만 제안할 수 있고
   파일은 사용자가 버튼을 눌러야 간다. 모델이 준 작업 힌트는 경로로 쓰지 않고 작업 이름 매칭에만 쓴다.
+
+## 재시도·첨부 경계
+
+- 소비된 승인은 실행 결과(outcome: EXECUTED·REFUSED·FAILED·ABANDONED)를 남긴다. 재시작 복구는 결과가 없고(소비 직후 크래시)
+  승인 유효시간 안이며 작업 버전이 그대로인 것만 한 번 이어서 실행한다. 나머지와 예약 승인은 폐기하고 한 번 알린다.
+- 검증만 다시 하기는 작업 예산과 별도로 2회까지다.
+- 재시도는 FAILED·BLOCKED 에서만, 작업 버전에 묶인 일회용 승인으로만 한다. 예약 재시도도 탭(승인) 후에만 저장되고, 실행 시점에 버전이
+  바뀌었으면 실행하지 않는다. 작업 예산(retries)을 넘으면 새 발주만 가능하다.
+- 첨부는 허용 형식·크기·내용 서명 검사를 통과한 것만 state inbox 에 저장한다. LLM 에는 메타데이터와 마스킹된 텍스트만 준다.
+  worktree 에는 `.chief-inbox/` 읽기 전용 사본으로만 넣고 커밋 대상에서 제외한다.
 
 ## 보고 계약
 

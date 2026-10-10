@@ -171,12 +171,23 @@ def host_summary() -> dict[str, Any]:
 
 
 def project_summary(projects: dict[str, Any] | None, home: Path) -> dict[str, Any]:
-    """발주 가능한 등록 프로젝트 ID → 저장소 경로. 하나뿐이면 모델이 되묻지 않고 그것을 쓴다."""
+    """발주 가능한 등록 프로젝트 ID → 저장소 경로. 하나뿐이면 모델이 되묻지 않고 그것을 쓴다.
+    default 는 프로젝트를 말하지 않은 발주가 가는 기본 프로젝트(projects.toml 첫 항목)."""
     items = {
         str(project_id): home_relative(Path(getattr(project, "repo_path", "") or ""), home)
         for project_id, project in (projects or {}).items()
     }
-    return {"registered": items, "only": next(iter(items)) if len(items) == 1 else None}
+    descriptions = {
+        str(project_id): str(getattr(project, "description", "") or "")
+        for project_id, project in (projects or {}).items()
+    }
+    return {
+        "registered": items,
+        "only": next(iter(items)) if len(items) == 1 else None,
+        "default": next(iter(items), None),
+        # 능력 지도: 코드 작업은 아래 저장소 파일 수정만 가능하다. 작업자는 영상·이미지 렌더나 외부 도구를 쓰지 못한다.
+        "descriptions": descriptions,
+    }
 
 
 def build_snapshot(

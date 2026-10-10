@@ -56,6 +56,139 @@ def parse_claude_response(raw: str) -> tuple[dict[str, Any], bool]:
     return sanitized if isinstance(sanitized, dict) else {}, True
 
 
+# MCP 서버·claude.ai 계정 커넥터(Figma·Canva 등)를 격리 작업자·검토자에 싣지 않는다(claude 2.1.292 --help 와
+# 실행 파일의 disableClaudeAiConnectors 설정·ENABLE_CLAUDEAI_MCP_SERVERS 환경변수로 확인). --mcp-config 는 값을 여러 개
+# 받는 옵션이라 '=' 형태로 붙여 뒤 인자를 삼키지 않게 한다.
+NO_MCP_ARGS = (
+    "--strict-mcp-config",
+    '--mcp-config={"mcpServers":{}}',
+    '--settings={"disableClaudeAiConnectors":true}',
+)
+
+
+def claude_sandbox(
+    *, workdir: Path, home: Path, credentials: Path, git_marker: Path | None = None
+) -> list[str]:
+    """Claude CLI 를 돌릴 Bubblewrap 인자("--" 앞까지). 읽기 전용 /usr, 빈 임시 홈(자격 증명 파일만 읽기 전용),
+    workdir 만 쓰기 가능. 네트워크는 API 호출 때문에 공유한다. 작업자와 독립 검토가 같은 격리를 쓴다."""
+    directory_args: list[str] = []
+    created: set[Path] = set()
+    for exposed in (workdir, home / ".claude"):
+        for parent in reversed(exposed.parents):
+            if parent == Path("/") or parent in created:
+                continue
+            if parent.parts and parent.parts[1:2] in (("home",), ("tmp",)):
+                directory_args.extend(("--dir", str(parent)))
+                created.add(parent)
+    directory_args.extend(("--dir", str(home / ".claude")))
+    git_args = ["--ro-bind", str(git_marker), str(git_marker)] if git_marker is not None else []
+    return [
+        "bwrap",
+        "--die-with-parent",
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-uts",
+        "--unshare-ipc",
+        "--new-session",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib64",
+        "/lib64",
+        "--symlink",
+        "usr/sbin",
+        "/sbin",
+        "--dir",
+        "/etc",
+        "--dir",
+        "/etc/ssl",
+        "--ro-bind",
+        "/etc/ssl/certs",
+        "/etc/ssl/certs",
+        "--ro-bind",
+        "/etc/ld.so.cache",
+        "/etc/ld.so.cache",
+        "--ro-bind",
+        "/etc/passwd",
+        "/etc/passwd",
+        "--ro-bind",
+        "/etc/group",
+        "/etc/group",
+        "--ro-bind",
+        "/etc/nsswitch.conf",
+        "/etc/nsswitch.conf",
+        "--ro-bind",
+        "/etc/hosts",
+        "/etc/hosts",
+        "--ro-bind",
+        "/run/systemd/resolve/stub-resolv.conf",
+        "/etc/resolv.conf",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--dir",
+        "/tmp",
+        *directory_args,
+        "--bind",
+        str(workdir),
+        str(workdir),
+        *git_args,
+        "--ro-bind",
+        str(credentials),
+        str(credentials),
+        "--clearenv",
+        "--setenv",
+        "HOME",
+        str(home),
+        "--setenv",
+        "PATH",
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "--setenv",
+        "LANG",
+        "C.UTF-8",
+        "--setenv",
+        "SSL_CERT_DIR",
+        "/etc/ssl/certs",
+        "--setenv",
+        "ENABLE_CLAUDEAI_MCP_SERVERS",
+        "false",
+        "--chdir",
+        str(workdir),
+    ]
+
+
+def worker_claude_argv(claude_path: str, model: str) -> list[str]:
+    """격리 안에서 실행할 작업자 claude 명령(미션은 표준입력). 파일 도구만, MCP·커넥터 없음."""
+    return [
+        claude_path,
+        "-p",
+        "--output-format",
+        "json",
+        "--permission-mode",
+        "acceptEdits",
+        "--permission-prompts",
+        "none",
+        "--restricted",
+        "--tools",
+        "Read,Edit,Write,Glob,Grep",
+        "--no-session-persistence",
+        "--disable-slash-commands",
+        *NO_MCP_ARGS,
+        "--model",
+        model,
+        "--effort",
+        "medium",
+    ]
+
+
 def run(args: argparse.Namespace) -> int:
     worktree = Path(args.worktree).resolve()
     mission_path = Path(args.mission).resolve()
@@ -113,113 +246,10 @@ def run(args: argparse.Namespace) -> int:
             },
         )
         return 127
-    directory_args: list[str] = []
-    created: set[Path] = set()
-    for exposed in (worktree, home / ".claude"):
-        for parent in reversed(exposed.parents):
-            if parent == Path("/") or parent in created:
-                continue
-            if parent.parts and parent.parts[1:2] in (("home",), ("tmp",)):
-                directory_args.extend(("--dir", str(parent)))
-                created.add(parent)
-    directory_args.extend(("--dir", str(home / ".claude")))
     command = [
-        "bwrap",
-        "--die-with-parent",
-        "--unshare-user",
-        "--unshare-pid",
-        "--unshare-uts",
-        "--unshare-ipc",
-        "--new-session",
-        "--ro-bind",
-        "/usr",
-        "/usr",
-        "--symlink",
-        "usr/bin",
-        "/bin",
-        "--symlink",
-        "usr/lib",
-        "/lib",
-        "--symlink",
-        "usr/lib64",
-        "/lib64",
-        "--symlink",
-        "usr/sbin",
-        "/sbin",
-        "--dir",
-        "/etc",
-        "--dir",
-        "/etc/ssl",
-        "--ro-bind",
-        "/etc/ssl/certs",
-        "/etc/ssl/certs",
-        "--ro-bind",
-        "/etc/ld.so.cache",
-        "/etc/ld.so.cache",
-        "--ro-bind",
-        "/etc/passwd",
-        "/etc/passwd",
-        "--ro-bind",
-        "/etc/group",
-        "/etc/group",
-        "--ro-bind",
-        "/etc/nsswitch.conf",
-        "/etc/nsswitch.conf",
-        "--ro-bind",
-        "/etc/hosts",
-        "/etc/hosts",
-        "--ro-bind",
-        "/run/systemd/resolve/stub-resolv.conf",
-        "/etc/resolv.conf",
-        "--dev",
-        "/dev",
-        "--proc",
-        "/proc",
-        "--dir",
-        "/tmp",
-        *directory_args,
-        "--bind",
-        str(worktree),
-        str(worktree),
-        "--ro-bind",
-        str(worktree / ".git"),
-        str(worktree / ".git"),
-        "--ro-bind",
-        str(credentials),
-        str(credentials),
-        "--clearenv",
-        "--setenv",
-        "HOME",
-        str(home),
-        "--setenv",
-        "PATH",
-        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "--setenv",
-        "LANG",
-        "C.UTF-8",
-        "--setenv",
-        "SSL_CERT_DIR",
-        "/etc/ssl/certs",
-        "--chdir",
-        str(worktree),
+        *claude_sandbox(workdir=worktree, home=home, credentials=credentials, git_marker=worktree / ".git"),
         "--",
-        claude_path,
-        "-p",
-        "--output-format",
-        "json",
-        "--permission-mode",
-        "acceptEdits",
-        "--permission-prompts",
-        "none",
-        "--restricted",
-        "--tools",
-        "Read,Edit,Write,Glob,Grep",
-        "--no-session-persistence",
-        "--disable-slash-commands",
-        "--model",
-        args.model,
-        "--effort",
-        "medium",
+        *worker_claude_argv(claude_path, args.model),
     ]
     stop = threading.Event()
     heartbeat = threading.Thread(
@@ -263,7 +293,7 @@ def run(args: argparse.Namespace) -> int:
             "classification": "SUCCESS" if success else classify_error(classification_source),
             "exit_code": completed.returncode,
             "session_id": response.get("session_id"),
-            "actual_model": response.get("model"),
+            "actual_model": response.get("model") or next(iter(response.get("modelUsage") or {}), None),
             "usage": response.get("usage"),
             "result": response_text if success else "",
             "error": "" if success else redact_text(combined_error, len(combined_error) + 1)[:4_000],

@@ -1,4 +1,8 @@
+# 첫 번째 항목이 기본 프로젝트다. /new 나 대화에서 프로젝트를 말하지 않으면 여기로 발주한다.
+# 다른 프로젝트는 "/new sandbox: 할 일" 처럼 앞에 ID 를 붙이거나 대화에서 이름을 말한다.
+# description 은 저장소가 무엇인지 한 줄. 대화 모델이 "이 저장소로 할 수 있는 일"을 판단하는 근거다.
 [projects.deskmini]
+description = "DeskMini 상태 API 서버(Fastify, /health 등) 코드. 웹사이트·브랜드 자산·영상 없음"
 repo_path = "/home/ionenet/deskmini"
 default_branch = "main"
 checks = [
@@ -9,3 +13,13 @@ checks = [
 deploy_enabled = false
 deploy_environment = "staging"
 
+# 실제 처리 경로(발주 → 격리 작업 → 검증 → 병합) 시험용 연습 저장소. 원격 없음, 배포 없음.
+[projects.sandbox]
+description = "봇 처리 경로 시험용 연습 저장소(파이썬 예제·테스트)"
+repo_path = "/home/ionenet/sandbox-chief"
+default_branch = "main"
+checks = [
+  ["python3", "-m", "unittest", "discover", "-s", "tests"],
+  ["git", "diff", "--check"],
+]
+deploy_enabled = false

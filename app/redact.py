@@ -15,6 +15,9 @@ SECRET_NAME_RE = re.compile(
 PATTERNS = (
     (re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b"), "<redacted>"),
     (re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"), "<redacted>"),
+    # AWS 액세스 키 ID(장기 AKIA·임시 ASIA)와 Slack 토큰(xoxa·xoxb·xoxp·xoxr·xoxs)
+    (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16,}\b"), "<redacted>"),
+    (re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"), "<redacted>"),
     (re.compile(r"\b(?:sk[-_]|ghp_|github_pat_)[A-Za-z0-9_-]{16,}\b", re.IGNORECASE), "<redacted>"),
     (re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]{12,}"), r"\1<redacted>"),
     (re.compile(r"(?i)(https?://[^\s:/]+:)" + _DONE + r"[^@\s]+@"), r"\1<redacted>@"),

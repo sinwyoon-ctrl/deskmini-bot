@@ -1,0 +1,156 @@
+{"id": "R01", "category": "재시도", "desc": "FAILED(검증 실패) /retry → 이유+버튼 → 누르면 attempt 2 로 1회 실행"}
+{"id": "R02", "category": "재시도", "desc": "같은 [다시 시도] 버튼 두 번(다른 update) → 1회만, 두 번째 응답 확인"}
+{"id": "R03", "category": "재시도", "desc": "같은 callback update 가 두 번 배달(같은 update_id) → 1회, 추가 메시지 없음"}
+{"id": "R04", "category": "재시도", "desc": "재시도 한도 소진(실행 2회, retries=1) → 버튼 없음, 한도 안내"}
+{"id": "R05", "category": "재시도", "desc": "카드 두 장(같은 버전) → 첫 장 실행 후 둘째 장은 거절(버전 바뀜)"}
+{"id": "R06", "category": "재시도", "desc": "/retry 진행 중(RUNNING) 작업 → 거절, 버튼 없음"}
+{"id": "R07", "category": "재시도", "desc": "/retry 없는 작업 ID → 찾지 못함"}
+{"id": "R08", "category": "재시도", "desc": "/retry 인자 없음 → 사용법"}
+{"id": "R09", "category": "재시도", "desc": "LIMIT_BLOCKED 'resets 3pm (Asia/Seoul)' 10:00 → 예약 버튼(15:05), 누른 뒤 14:59 미실행·15:05 1회"}
+{"id": "R10", "category": "재시도", "desc": "LIMIT_BLOCKED 예약 버튼을 누르지 않으면 풀린 뒤에도 실행 없음"}
+{"id": "R11", "category": "재시도", "desc": "예약 후 재시작 → 시각에 1회만, 다시 재시작해도 추가 실행 없음"}
+{"id": "R12", "category": "재시도", "desc": "예약 후 작업이 바뀜(사용자 중단 → CANCELLED) → 예약은 SKIPPED, 실행 0"}
+{"id": "R24", "category": "재시도", "desc": "예약 후 풀린 직후(15:01) /retry → 즉시 [다시 시도]여야 함(같은 시각 재해석 문제)"}
+{"id": "R13", "category": "재시도", "desc": "LIMIT_BLOCKED 인데 풀리는 시각 없음 → 즉시 [다시 시도]"}
+{"id": "R14", "category": "재시도", "desc": "'resets in 2 hours' → now+2h+5m 예약"}
+{"id": "R15", "category": "재시도", "desc": "'resets Oct 10, 10:30pm (Asia/Seoul)' → 10/10 22:35"}
+{"id": "R16", "category": "재시도", "desc": "한도 차단(08:50, 'resets 9am') 후 10:00 에 /retry → 이미 풀렸으니 즉시 [다시 시도]여야 함"}
+{"id": "R17", "category": "재시도", "desc": "예약 버튼 두 번 → 예약 1건, 실행 1회"}
+{"id": "R18", "category": "재시도", "desc": "[다시 시도] 승인 만료 후 누름 → 실행 없음, 만료 안내"}
+{"id": "R19", "category": "재시도", "desc": "검토 불가(UNVERIFIED, BLOCKED, 작업자 성공) → [검증 다시 시도] → 검증만 1회"}
+{"id": "R20", "category": "재시도", "desc": "검증 다시 시도는 예산과 무관하게 무제한? (연속 3회)"}
+{"id": "R21", "category": "재시도", "desc": "/retry 로 예약 제안 후 풀린 시각 지나 예약 버튼 누름 → 다음 루프 즉시 1회"}
+{"id": "R22", "category": "재시도", "desc": "작업자 단계 실패가 reconcile 에서 감지되면 카드가 자동으로 뜸(이유+버튼)"}
+{"id": "R23", "category": "재시도", "desc": "자동 실패 카드 → 재시도 → 다시 실패 → 한도 소진 카드(버튼 없음)"}
+{"id": "A01", "category": "첨부", "desc": "사진 + '/new sandbox: …' 캡션 → 발주 카드(sandbox, 첨부 표시), LLM 호출 없음"}
+{"id": "A02", "category": "첨부", "desc": "사진 + 자연어 캡션 → 대화 모델엔 메타데이터만(이미지 바이트 없음)"}
+{"id": "A03", "category": "첨부", "desc": "캡션 없는 사진 → 저장 + 무엇을 할지 질문, 작업·LLM 없음"}
+{"id": "A04", "category": "첨부", "desc": "캡션 없는 문서 → 다음 '/new sandbox: …' 에 첨부 연결"}
+{"id": "A05", "category": "첨부", "desc": "캡션 없는 문서 후 31분 뒤 지시 → 연결하지 않음"}
+{"id": "A06", "category": "첨부", "desc": "선언 크기 25MB → 내려받기 전에 거절"}
+{"id": "A07", "category": "첨부", "desc": "선언 크기 없음, getFile 이 25MB 보고 → 내려받기 전 거절"}
+{"id": "A08", "category": "첨부", "desc": "크기 정보 없음, 실제 21MB → 내려받기 중단(TelegramError) 또는 거절, 저장 없음"}
+{"id": "A09", "category": "첨부", "desc": "허용 안 되는 형식 setup.exe → 거절, 저장·발주 없음"}
+{"id": "A10", "category": "첨부", "desc": "허용 안 되는 형식 run.sh → 거절, 저장·발주 없음"}
+{"id": "A11", "category": "첨부", "desc": "허용 안 되는 형식 bundle.zip → 거절, 저장·발주 없음"}
+{"id": "A12", "category": "첨부", "desc": "허용 안 되는 형식 page.html → 거절, 저장·발주 없음"}
+{"id": "A13", "category": "첨부", "desc": "허용 안 되는 형식 report.docx → 거절, 저장·발주 없음"}
+{"id": "A14", "category": "첨부", "desc": "허용 안 되는 형식 logo.svg → 거절, 저장·발주 없음"}
+{"id": "A15", "category": "첨부", "desc": "내용 서명 위조: png 이름에 실행 파일(MZ) → 거절"}
+{"id": "A16", "category": "첨부", "desc": "내용 서명 위조: txt 이름에 ELF → 거절"}
+{"id": "A17", "category": "첨부", "desc": "내용 서명 위조: pdf 이름에 HTML → 거절"}
+{"id": "A18", "category": "첨부", "desc": "내용 서명 위조: jpg 이름에 PNG 내용 → 거절"}
+{"id": "A19", "category": "첨부", "desc": "내용 서명 위조: json 이름에 셔뱅 스크립트 → 거절"}
+{"id": "A20", "category": "첨부", "desc": "내용 서명 위조: txt 에 NUL → 거절"}
+{"id": "A21", "category": "첨부", "desc": "내용 서명 위조: txt 가 UTF-8 아님 → 거절"}
+{"id": "A22", "category": "첨부", "desc": "내용 서명 위조: 빈 파일 → 거절"}
+{"id": "A23", "category": "첨부", "desc": "파일 이름 ../../../.ssh/authorized_keys.txt → 이름만 남기고 inbox 안에 저장"}
+{"id": "A24", "category": "첨부", "desc": "RTL 덮어쓰기 이름 'invoice\\u202etxt.exe' → .exe 로 판정, 거절"}
+{"id": "A25", "category": "첨부", "desc": "아주 긴 이름(300자) → 60자 안쪽으로 줄여 저장"}
+{"id": "A26", "category": "첨부", "desc": "비밀값처럼 보이는 이름 '.env' → 거절"}
+{"id": "A27", "category": "첨부", "desc": "비밀값처럼 보이는 이름 'id_rsa' → 거절"}
+{"id": "A28", "category": "첨부", "desc": "비밀값처럼 보이는 이름 'api_key.txt' → 거절"}
+{"id": "A29", "category": "첨부", "desc": "비밀값처럼 보이는 이름 'credentials.json' → 거절"}
+{"id": "A30", "category": "첨부", "desc": "비밀값처럼 보이는 이름 'secrets.md' → 거절"}
+{"id": "A31", "category": "첨부", "desc": "비밀값이 든 txt + '/new' → inbox 원본 보관, worktree 사본은 마스킹·0444·커밋 제외, 출력 누출 없음"}
+{"id": "A32", "category": "첨부", "desc": "worktree 의 .chief-inbox 가 바깥을 가리키는 심볼릭 링크 → 쓰기 거부, 바깥 무변화"}
+{"id": "A33", "category": "첨부", "desc": ".chief-inbox 안 같은 이름이 바깥 파일 링크 → 그 링크로 쓰지 않음"}
+{"id": "A34", "category": "첨부", "desc": "DB 의 stored_path 가 inbox 밖(변조) → 복사하지 않음"}
+{"id": "A35", "category": "첨부", "desc": "Telegram file_path 경로 탈출(../, 절대경로, %2e) → 네트워크 전 거절"}
+{"id": "A36", "category": "첨부", "desc": "앨범(media_group) 사진 2장 캡션 없음 → 짧은 확인 2번, 질문 남발 없음"}
+{"id": "A37", "category": "첨부", "desc": "이름 없는 문서 + application/pdf + %PDF → document.pdf 로 저장"}
+{"id": "A38", "category": "첨부", "desc": "캡션에 토큰 → DB 캡션·출력 모두 마스킹"}
+{"id": "A39", "category": "첨부", "desc": "Telegram 사진인데 내용이 PNG → .png 로 저장(서명 기준)"}
+{"id": "A40", "category": "첨부", "desc": "비밀값 txt + 자연어 캡션 → 대화 모델 입력은 마스킹 미리보기(토큰·PEM 없음)"}
+{"id": "A41", "category": "첨부", "desc": "마스킹 규칙 밖 형식(AWS·Slack 토큰) txt → 대화 모델 입력에 원문이 가는지(탐침)"}
+{"id": "A42", "category": "첨부", "desc": "다운로드 실패(TelegramError) → 안내, 저장 없음"}
+{"id": "T01", "category": "할 일", "desc": "/todo codex … → 실제 hub 사본으로 파일 생성·커밋, 확인 답장"}
+{"id": "T02", "category": "할 일", "desc": "/todo → 열린 목록"}
+{"id": "T03", "category": "할 일", "desc": "/todo any … → any 로 기록"}
+{"id": "T04", "category": "할 일", "desc": "/todo codex (내용 없음) → 사용법, hub 호출 없음"}
+{"id": "T05", "category": "할 일", "desc": "/todo bob 할 일 → 사용법(대상 아님)"}
+{"id": "T06", "category": "할 일", "desc": "할 일 문구 인젝션($(…) 명령 치환) → 글자 그대로 저장, 실행 안 됨"}
+{"id": "T07", "category": "할 일", "desc": "할 일 문구 인젝션(백틱) → 글자 그대로 저장, 실행 안 됨"}
+{"id": "T08", "category": "할 일", "desc": "할 일 문구 인젝션(세미콜론) → 글자 그대로 저장, 실행 안 됨"}
+{"id": "T09", "category": "할 일", "desc": "할 일 문구 인젝션(따옴표 탈출) → 글자 그대로 저장, 실행 안 됨"}
+{"id": "T10", "category": "할 일", "desc": "할 일 문구 인젝션(줄바꿈으로 머리글 위조) → 글자 그대로 저장, 실행 안 됨"}
+{"id": "T11", "category": "할 일", "desc": "할 일 문구 인젝션(IFS 변수) → 글자 그대로 저장, 실행 안 됨"}
+{"id": "T12", "category": "할 일", "desc": "아주 긴 할 일(3000자) → 500자 안쪽 저장"}
+{"id": "T13", "category": "할 일", "desc": "할 일 문구가 '-n' 하나 → 내용이 비지 않고 저장되는지"}
+{"id": "T14", "category": "할 일", "desc": "/todo done 1 → 닫힘, /todo done ../../x → 사용법(hub 호출 없음)"}
+{"id": "T15", "category": "할 일", "desc": "대화 dispatch_todo(codex) → 바로 기록, 답에 '승인/카드' 주장 없음"}
+{"id": "T16", "category": "할 일", "desc": "대화 dispatch_todo(assignee=root/빈 문구) → 버림"}
+{"id": "T17", "category": "할 일", "desc": "할 일 문구에 토큰 → hub 에 마스킹된 문구만"}
+{"id": "T18", "category": "할 일", "desc": "hub 스크립트 없음 → 실패 안내"}
+{"id": "P01", "category": "프로젝트", "desc": "/new sandbox: … → sandbox 카드"}
+{"id": "P02", "category": "프로젝트", "desc": "/new 내용(프로젝트 없음) → deskmini 기본, 카드에 표시"}
+{"id": "P03", "category": "프로젝트", "desc": "/new unknownproj: … → 모르는 프로젝트를 기본으로 몰래 돌리지 않아야 함"}
+{"id": "P04", "category": "프로젝트", "desc": "/new Sandbox: …(대문자) → sandbox 로 인식되는지"}
+{"id": "P05", "category": "프로젝트", "desc": "/new sandbox 테스트 추가(콜론 없음) → sandbox"}
+{"id": "P06", "category": "프로젝트", "desc": "개발: sandbox: … → sandbox"}
+{"id": "P07", "category": "프로젝트", "desc": "대화 create_task project_id=null → deskmini 카드, 실행 없음"}
+{"id": "P08", "category": "프로젝트", "desc": "대화 create_task project_id='evil' → 발주 안 함"}
+{"id": "P09", "category": "프로젝트", "desc": "/new sandbox: (빈 내용) → 사용법"}
+{"id": "X01", "category": "재시작", "desc": "RUNNING 중 재시작 → 재실행 없음"}
+{"id": "X02", "category": "재시작", "desc": "VERIFYING 중 재시작 → 검증 1회"}
+{"id": "X03", "category": "재시작", "desc": "착수 승인 소비 직후 크래시 → 재시작 때 1회 착수, 다시 재시작해도 1회"}
+{"id": "X04", "category": "재시작", "desc": "재시도 승인 소비 직후 크래시 → 재시작 때 1회, 두 번째 재시작 0"}
+{"id": "X05", "category": "재시작", "desc": "[다시 시도] 눌렀으나 '다른 작업 진행 중'으로 실패 안내 → 나중 재시작 때 몰래 실행되면 안 됨"}
+{"id": "X06", "category": "재시작", "desc": "예약 승인 소비 후 예약 저장 전 크래시 → 재시작 후 상태(유실 여부)"}
+{"id": "X07", "category": "재시작", "desc": "메시지 처리 중 크래시(PROCESSING) → 재시작 때 1번만 재처리"}
+{"id": "X08", "category": "재시작", "desc": "승인 콜백 처리 중 크래시(소비·착수 후 finish 전) → 재생 때 '이미 접수', 추가 착수 없음"}
+{"id": "X09", "category": "재시작", "desc": "outbox 대기 중 재시작 → 1번만 전송"}
+{"id": "X10", "category": "재시작", "desc": "재부팅으로 INTERRUPTED 된 작업 → /retry 가능 여부"}
+{"id": "X11", "category": "재시작", "desc": "첨부 메시지 처리 중 크래시 → 재생 때 첨부 중복 저장 여부"}
+{"id": "X12", "category": "재시작", "desc": "예약 대기 + 재시작 2번 + 시각 경과 → 1회"}
+{"id": "C01", "category": "동시성", "desc": "/new 두 개 연달아 → 카드 2장, 실행 없음"}
+{"id": "C02", "category": "동시성", "desc": "착수 버튼 두 번 → 1회"}
+{"id": "C03", "category": "동시성", "desc": "같은 착수 콜백 update 두 번 배달 → 1회, 추가 메시지 없음"}
+{"id": "C04", "category": "동시성", "desc": "작업 진행 중(max 1) 다른 작업 착수 → 거절 + 알기 쉬운 안내"}
+{"id": "C05", "category": "동시성", "desc": "착수 거절(다른 작업 진행 중) 후 그 작업이 끝나고 재시작 → 몰래 착수되면 안 됨"}
+{"id": "C06", "category": "동시성", "desc": "착수 뒤 같은 카드의 [취소] → 상태 유지, 안내"}
+{"id": "C07", "category": "동시성", "desc": "[취소] 후 [착수] → 착수 거절"}
+{"id": "C08", "category": "동시성", "desc": "진행 중 작업에 /retry → 거절"}
+{"id": "C09", "category": "동시성", "desc": "예약 시각에 다른 작업 진행 중 → 대기, 끝나면 1회"}
+{"id": "C10", "category": "동시성", "desc": "예약 카드 두 장 각각 누름 → 앞 예약 REPLACED, 실행 1회"}
+{"id": "F01", "category": "위조 콜백", "desc": "approve:retry:A-forged → 실행 없음"}
+{"id": "F02", "category": "위조 콜백", "desc": "재시도 승인 ID 를 approve:start 로 → 동작 불일치 거절"}
+{"id": "F03", "category": "위조 콜백", "desc": "다른 사용자가 유효한 승인 버튼 → 무시, 승인 미소비"}
+{"id": "F04", "category": "위조 콜백", "desc": "그룹 채팅에서 온 유효한 버튼 → 무시"}
+{"id": "F05", "category": "위조 콜백", "desc": "형식 깨진 'approve:retry' → 실행 없음"}
+{"id": "F06", "category": "위조 콜백", "desc": "'approve:schedule_retry:<id>:extra' → 실행 없음"}
+{"id": "F07", "category": "위조 콜백", "desc": "FAILED 작업에 cancel: 콜백 → 상태 불변"}
+{"id": "F08", "category": "위조 콜백", "desc": "실행된 예약의 승인 버튼 재사용 → 추가 실행 없음"}
+{"id": "O01", "category": "Telegram 장애", "desc": "전송 실패 → outbox 대기 → 다음 루프 1회 전달"}
+{"id": "O02", "category": "Telegram 장애", "desc": "영구 400 → 1번 시도 후 FAILED, 무한 재시도 없음"}
+{"id": "O03", "category": "Telegram 장애", "desc": "일시 오류 계속 → 20회에서 FAILED"}
+{"id": "O04", "category": "Telegram 장애", "desc": "429 retry_after=120 → 바로 다시 보내지 않음"}
+{"id": "O05", "category": "Telegram 장애", "desc": "카드 수정 실패(메시지 없음) → 새 메시지로 대체"}
+{"id": "O06", "category": "Telegram 장애", "desc": "answerCallbackQuery 400(query too old: 봇이 꺼진 사이 누른 버튼) → 승인은 처리돼야 함"}
+{"id": "O07", "category": "Telegram 장애", "desc": "outbox 에 비밀값 → 저장·전송 모두 마스킹"}
+{"id": "O08", "category": "Telegram 장애", "desc": "같은 dedupe 키 두 번 → 1번만"}
+{"id": "O09", "category": "Telegram 장애", "desc": "발주 카드 전송 실패 → outbox 로 버튼째 전달, 버튼 동작"}
+{"id": "E01", "category": "승인 만료", "desc": "착수 승인 만료 → 실행 없음, 만료 안내"}
+{"id": "E02", "category": "승인 만료", "desc": "병합 승인 만료 → 반영 없음, 만료 안내"}
+{"id": "E03", "category": "승인 만료", "desc": "예약 승인 만료 → 예약 없음"}
+{"id": "E04", "category": "승인 만료", "desc": "만료 후 /retry 로 새 카드 → 정상 1회"}
+{"id": "E05", "category": "승인 만료", "desc": "만료된 승인 버튼 3번(재배달 포함) → 오류 메시지 개수"}
+{"id": "I01", "category": "입력 형태", "desc": "음성 메시지 → 지원 형식 안내, LLM·다운로드 없음"}
+{"id": "I02", "category": "입력 형태", "desc": "스티커 메시지 → 지원 형식 안내, LLM·다운로드 없음"}
+{"id": "I03", "category": "입력 형태", "desc": "위치 메시지 → 지원 형식 안내, LLM·다운로드 없음"}
+{"id": "I04", "category": "입력 형태", "desc": "영상 메시지 → 지원 형식 안내, LLM·다운로드 없음"}
+{"id": "I05", "category": "입력 형태", "desc": "연락처 메시지 → 지원 형식 안내, LLM·다운로드 없음"}
+{"id": "I06", "category": "입력 형태", "desc": "투표 메시지 → 지원 형식 안내, LLM·다운로드 없음"}
+{"id": "I07", "category": "입력 형태", "desc": "GIF(animation+document mp4) → 형식 거절"}
+{"id": "I08", "category": "입력 형태", "desc": "edited_message → 무시(답 없음)"}
+{"id": "I09", "category": "입력 형태", "desc": "전달(forward)된 '/new …' → 사용자가 직접 친 명령처럼 처리되는지"}
+{"id": "I10", "category": "입력 형태", "desc": "다른 채팅 ID → 무시"}
+{"id": "I11", "category": "입력 형태", "desc": "그룹에서 봇 멘션(같은 사용자) → 무시"}
+{"id": "I12", "category": "입력 형태", "desc": "4500자 메시지 → 처리, 답 4096자 이하"}
+{"id": "I13", "category": "입력 형태", "desc": "이모지만 → 대화로 처리, 동작 없음"}
+{"id": "I14", "category": "입력 형태", "desc": "공백만 → 지원 형식 안내, LLM 없음"}
+{"id": "I15", "category": "입력 형태", "desc": "channel_post → 무시"}
+{"id": "I16", "category": "입력 형태", "desc": "그룹에서 보낸 문서 → 무시, 내려받기 없음"}
+{"id": "I17", "category": "입력 형태", "desc": "같은 개인 채팅 ID 인데 보낸 사람이 다름 → 무시"}
+{"id": "I18", "category": "입력 형태", "desc": "update 에 message·callback 둘 다 없음(my_chat_member) → 조용히 무시"}
+{"id": "I19", "category": "입력 형태", "desc": "캡션에 지원 안 되는 명령(/stop 없는 ID) + 사진 → 사용법, 첨부만 저장"}

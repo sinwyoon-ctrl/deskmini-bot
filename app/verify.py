@@ -9,6 +9,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import tomllib
+
 from adapters.gemini_rest import GeminiInterpreter, InterpretationUnavailable
 from app.collector import run_fixed
 from app.config import Settings
@@ -31,13 +33,101 @@ class VerificationError(RuntimeError):
     pass
 
 
+REVIEW_PROVIDERS = ("gemini", "claude_cli")
+# 무료 Gemini 할당량(하루 약 20회)이 바닥나면 로컬 Claude Code CLI(구독)로 넘어간다.
+DEFAULT_REVIEW_CHAIN = ["gemini", "claude_cli"]
+
+
+def review_settings(models_path: Path) -> dict[str, Any]:
+    """[review] providers = ["gemini", "claude_cli"] (앞부터 시도). 예전 provider = "…" 한 개도 읽는다.
+    둘 다 없으면 기본 사슬, 알 수 없는 이름은 버린다(남는 게 없으면 gemini)."""
+    try:
+        raw = tomllib.loads(models_path.read_text(encoding="utf-8")).get("review") or {}
+    except (OSError, tomllib.TOMLDecodeError):
+        raw = {}
+    if isinstance(raw.get("providers"), list):
+        requested = [str(item) for item in raw["providers"]]
+    elif raw.get("provider"):
+        requested = [str(raw["provider"])]
+    else:
+        requested = list(DEFAULT_REVIEW_CHAIN)
+    providers = list(dict.fromkeys(item for item in requested if item in REVIEW_PROVIDERS)) or ["gemini"]
+    return {
+        "provider": providers[0],
+        "providers": providers,
+        "model": str(raw.get("model") or "sonnet"),
+        "effort": str(raw.get("effort") or "low"),
+        "timeout_seconds": int(raw.get("timeout_seconds") or 300),
+    }
+
+
+def reviewer_name(reviewer: Any) -> str:
+    name = getattr(reviewer, "name", None)
+    return name if isinstance(name, str) and name else ("gemini" if isinstance(reviewer, GeminiInterpreter) else type(reviewer).__name__)
+
+
+class FallbackReviewer:
+    """독립 검토 제공자 사슬. 앞 제공자가 못 하면(할당량·네트워크·CLI 없음 등) 다음으로 넘어간다.
+    판정(PASS/FAIL)을 받으면 거기서 멈춘다 — 불통과를 다른 검토자로 다시 묻지 않는다."""
+
+    name = "fallback"
+
+    def __init__(self, reviewers: list[tuple[str, Any]]):
+        self.reviewers = reviewers
+
+    def review_with_provider(self, **kwargs: Any) -> tuple[Any, str, list[str]]:
+        """(검토 결과, 판정한 제공자 이름, 앞 제공자들의 실패 사유)."""
+        errors: list[str] = []
+        for name, reviewer in self.reviewers:
+            try:
+                return reviewer.review_diff(**kwargs), name, errors
+            except Exception as exc:  # noqa: BLE001 — 어떤 실패든 다음 검토자로 넘긴다
+                errors.append(f"{name}: {redact_text(str(exc) or type(exc).__name__, 200)}")
+        raise InterpretationUnavailable("; ".join(errors) or "no review provider configured")
+
+    def review_diff(self, **kwargs: Any) -> Any:
+        return self.review_with_provider(**kwargs)[0]
+
+
+def run_review(reviewer: Any, **kwargs: Any) -> tuple[Any, str, list[str]]:
+    if isinstance(reviewer, FallbackReviewer):
+        return reviewer.review_with_provider(**kwargs)
+    return reviewer.review_diff(**kwargs), reviewer_name(reviewer), []
+
+
+def build_reviewer(models_path: Path, gemini: GeminiInterpreter, state_dir: Path) -> Any:
+    """models.toml [review].providers 순서대로 독립 검토 제공자를 고른다. 하나면 그 제공자, 여럿이면 FallbackReviewer."""
+    config = review_settings(models_path)
+    chain: list[tuple[str, Any]] = []
+    for provider in config["providers"]:
+        if provider == "claude_cli":
+            from adapters.claude_cli import ClaudeCliReviewer
+
+            chain.append(
+                (
+                    "claude_cli",
+                    ClaudeCliReviewer(
+                        model=config["model"],
+                        effort=config["effort"],
+                        timeout_seconds=config["timeout_seconds"],
+                        work_root=state_dir / "review",
+                    ),
+                )
+            )
+        else:
+            chain.append(("gemini", gemini))
+    return chain[0][1] if len(chain) == 1 else FallbackReviewer(chain)
+
+
 class Verifier:
     def __init__(
         self,
         settings: Settings,
         store: StateStore,
-        reviewer: GeminiInterpreter,
+        reviewer: Any,
     ):
+        """reviewer: review_diff(task_specification=, diff_text=, checks=) -> ReviewResult 를 가진 객체
+        (GeminiInterpreter 또는 adapters.claude_cli.ClaudeCliReviewer)."""
         self.settings = settings
         self.store = store
         self.reviewer = reviewer
@@ -134,11 +224,15 @@ class Verifier:
             return self.store.get_task(task_id)
 
         try:
-            review = self.reviewer.review_diff(
-                task_specification=task["specification"],
-                diff_text=raw_diff,
-                checks=checks,
-            )
+            review_kwargs: dict[str, Any] = {
+                "task_specification": task["specification"],
+                "diff_text": raw_diff,
+                "checks": checks,
+            }
+            attachments = self._review_attachments(task_id, worktree)
+            if attachments:
+                review_kwargs["attachments"] = attachments
+            review, reviewer_used, review_fallbacks = run_review(self.reviewer, **review_kwargs)
         except InterpretationUnavailable as exc:
             evidence = self._write_evidence(
                 task,
@@ -146,6 +240,8 @@ class Verifier:
                     "verdict": "UNVERIFIED",
                     "reason": f"Independent review unavailable: {exc}",
                     "checks": checks,
+                    "reviewers_tried": [name for name, _ in getattr(self.reviewer, "reviewers", [])]
+                    or [reviewer_name(self.reviewer)],
                 },
             )
             self.store.add_event(task_id, None, "REVIEW_UNAVAILABLE", "verify", evidence)
@@ -159,6 +255,8 @@ class Verifier:
                     "review_verdict": review.verdict,
                     "review_summary": review.summary,
                     "review_findings": review.findings,
+                    "reviewer": reviewer_used,
+                    "review_fallbacks": review_fallbacks,
                 },
             )
 
@@ -175,6 +273,8 @@ class Verifier:
                     "verdict": review.verdict,
                     "summary": review.summary,
                     "findings": review.findings,
+                    "reviewer": reviewer_used,
+                    "fallbacks": review_fallbacks,
                 },
             },
         )
@@ -217,6 +317,8 @@ class Verifier:
                         "verdict": review.verdict,
                         "summary": review.summary,
                         "findings": review.findings,
+                        "reviewer": reviewer_used,
+                        "fallbacks": review_fallbacks,
                     },
                 },
             )
@@ -228,6 +330,24 @@ class Verifier:
             )
             self.store.add_event(task_id, None, "VERIFICATION_PASSED", "verify", evidence)
         return ready
+
+    def _review_attachments(self, task_id: str, worktree: Path) -> list[dict[str, Any]]:
+        """작업에 붙은 첨부 요약. 텍스트는 worktree 에 넣은 마스킹 사본을 그대로(최대 6천 자) 준다."""
+        items = self.store.attachments_for_task(task_id)
+        result: list[dict[str, Any]] = []
+        inbox = (worktree / ".chief-inbox").resolve()
+        for item in items[:5]:
+            name = str(item.get("stored_name") or "")
+            entry: dict[str, Any] = {"path": f".chief-inbox/{name}", "size": item.get("size"), "type": name.rsplit(".", 1)[-1]}
+            candidate = (inbox / name)
+            if entry["type"] in {"txt", "md", "csv", "json"} and candidate.is_file() and not candidate.is_symlink():
+                try:
+                    if candidate.resolve().parent == inbox:
+                        entry["content_redacted"] = redact_text(candidate.read_text(encoding="utf-8", errors="replace"), 6_000)
+                except OSError:
+                    pass
+            result.append(entry)
+        return result
 
     def _valid_worktree_metadata(self, worktree: Path, repo_path: Path) -> bool:
         marker = worktree / ".git"

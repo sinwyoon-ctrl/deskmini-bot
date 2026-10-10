@@ -54,7 +54,11 @@ CREATE TABLE IF NOT EXISTS approvals (
     task_version INTEGER NOT NULL,
     expires_at TEXT NOT NULL,
     consumed_at TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    -- 소비 뒤 실행 결과: EXECUTED | REFUSED | FAILED | ABANDONED. NULL = 소비만 되고 실행 시도 전(크래시 구간).
+    outcome TEXT,
+    outcome_at TEXT,
+    outcome_note TEXT
 );
 
 CREATE TABLE IF NOT EXISTS operations (
@@ -163,3 +167,37 @@ CREATE TABLE IF NOT EXISTS deliverables (
 
 CREATE INDEX IF NOT EXISTS idx_alerts_key ON alerts(dedupe_key, id);
 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, created_at);
+
+-- 4라운드: 첨부(사진·문서)와 예약 재시도. 추가 테이블만 만든다.
+CREATE TABLE IF NOT EXISTS attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    update_id INTEGER,
+    chat_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    stored_name TEXT NOT NULL,
+    stored_path TEXT NOT NULL UNIQUE,
+    mime TEXT,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    caption TEXT,
+    task_id TEXT REFERENCES tasks(id),
+    created_at TEXT NOT NULL,
+    file_unique_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS scheduled_retries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    approval_id TEXT NOT NULL UNIQUE REFERENCES approvals(id),
+    task_version INTEGER NOT NULL,
+    run_at TEXT NOT NULL,
+    state TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL,
+    finished_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_task ON attachments(task_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_update ON attachments(update_id);
+CREATE INDEX IF NOT EXISTS idx_scheduled_retries_state ON scheduled_retries(state, run_at);
