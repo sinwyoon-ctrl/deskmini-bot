@@ -83,7 +83,7 @@ from app.state import ConflictError, StateStore
 from app.todo import HubTodo
 from app.verify import VerificationError, Verifier, build_reviewer
 from app.visual import STATUS_LABELS as HANDOFF_STATUS_LABELS
-from app.visual import card_conclusion, create_visual_request, handoff_status, todo_id_from_output
+from app.visual import SAFE_REL_RE, card_conclusion, create_visual_request, handoff_status, todo_id_from_output
 from app.watch import Observation, detect
 
 
@@ -685,6 +685,19 @@ class ChiefBot:
                     f"✅ <b>{esc(item.get('to'))}</b> 가 넘긴 일을 닫았습니다: <code>{esc(key)}</code>\n"
                     f"• {esc(str(item.get('text') or '')[:200])}",
                 )
+        # 봇이 만들지 않은 요청(Claude·대표가 직접 쓴 request.md)의 판단 카드도 알린다. dedupe 키가 같아 중복되지 않는다.
+        visual_root = self.paths.agent_hub / "visual"
+        for card in sorted(visual_root.glob("*/*/card.md"))[-50:]:
+            key = card.parent.name
+            if card.is_symlink() or not SAFE_REL_RE.fullmatch(f"visual/{card.parent.parent.name}/{key}/request.md"):
+                continue
+            conclusion = card_conclusion(card) or "결론 줄 없음"
+            images = len([p for p in (card.parent / "outputs").glob("*") if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}])
+            self._notify(
+                f"handoff-card-{key}",
+                f"📬 <b>판단 카드 도착</b>: <code>{esc(key)}</code>\n"
+                f"결론: {esc(conclusion)}\n이미지 {images}장 · <code>agent-hub/visual/{esc(card.parent.parent.name)}/{esc(key)}/card.md</code>",
+            )
 
     def _execute_approval(self, approval: dict[str, Any]) -> None:
         """소비된 승인을 실행한다. 거절(RunnerError·ConflictError)은 예외로 올리고, 재시도 거절은 직접 안내한다."""

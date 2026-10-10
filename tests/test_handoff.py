@@ -277,3 +277,31 @@ class PromptTaxonomyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ManualVisualCardNoticeTest(unittest.TestCase):
+    def test_card_from_manual_request_is_announced_once(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from app.bot import ChiefBot
+
+        with tempfile.TemporaryDirectory(dir=str(Path.home())) as tmp:
+            hub = Path(tmp) / "agent-hub"
+            req = hub / "visual" / "ionenet-hero" / "ionenet-hero-20261009-01"
+            (req / "outputs").mkdir(parents=True)
+            (req / "request.md").write_text("요청", encoding="utf-8")
+            (req / "card.md").write_text("---\nverdict: 재작업\n---\n\n# 결론 (두 줄 이내)\n\n모바일 가독성 때문에 재작업.\n", encoding="utf-8")
+            (req / "outputs" / "a.jpg").write_bytes(b"x")
+            sent = []
+            fake = SimpleNamespace(
+                paths=SimpleNamespace(agent_hub=hub),
+                _handoffs=lambda limit=20: [],
+                _notify=lambda key, text: sent.append((key, text)),
+            )
+            ChiefBot._check_handoffs(fake)
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(sent[0][0], "handoff-card-ionenet-hero-20261009-01")
+            self.assertIn("재작업", sent[0][1])
+            self.assertIn("이미지 1장", sent[0][1])
