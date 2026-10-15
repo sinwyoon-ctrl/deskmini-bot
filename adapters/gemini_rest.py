@@ -140,9 +140,9 @@ class GeminiInterpreter:
             raise InterpretationUnavailable("Gemini review returned invalid JSON") from exc
         return parse_review(data)
 
-    def chat(self, envelope: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    def chat(self, envelope: dict[str, Any], *, timeout_seconds: float | None = None) -> tuple[dict[str, Any], str | None]:
         """대화 응답용 호출. (JSON 객체, 실제 사용 모델) 을 돌려준다."""
-        output, model = self._run(json.dumps(envelope, ensure_ascii=False), agent="telegram-chat")
+        output, model = self._run(json.dumps(envelope, ensure_ascii=False), agent="telegram-chat", timeout_seconds=timeout_seconds)
         try:
             return _extract_json(output), model
         except ValueError as exc:
@@ -151,7 +151,7 @@ class GeminiInterpreter:
     def _invoke(self, prompt: str, *, agent: str) -> str:
         return self._run(prompt, agent=agent)[0]
 
-    def _run(self, prompt: str, *, agent: str) -> tuple[str, str | None]:
+    def _run(self, prompt: str, *, agent: str, timeout_seconds: float | None = None) -> tuple[str, str | None]:
         if not self.available():
             raise InterpretationUnavailable("Gemini REST adapter is not installed")
         environment = os.environ.copy()
@@ -169,7 +169,7 @@ class GeminiInterpreter:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=self.timeout_seconds,
+                timeout=min(self.timeout_seconds, timeout_seconds) if timeout_seconds is not None else self.timeout_seconds,
                 env=environment,
                 check=False,
             )

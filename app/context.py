@@ -232,7 +232,20 @@ def build_snapshot(
     sections["alerts"] = alerts_summary(store)
     sections["alerts_recent"] = recent_alerts(store)
     text = json.dumps(sections, ensure_ascii=False, separators=(",", ":"), default=str)
-    return redact_text(text, SNAPSHOT_LIMIT)
+    if len(text) > SNAPSHOT_LIMIT:
+        # Preserve section names and valid JSON; targeted lookups retrieve omitted evidence.
+        for name in ("agent_hub_board", "repos", "agent_hub_recent_log", "orca_tasks", "bot_tasks", "host"):
+            if len(text) <= SNAPSHOT_LIMIT:
+                break
+            raw = json.dumps(sections[name], ensure_ascii=False, default=str)
+            sections[name] = {"excerpt": redact_text(raw, 600), "truncated": True}
+            text = json.dumps(sections, ensure_ascii=False, separators=(",", ":"), default=str)
+    if len(text) > SNAPSHOT_LIMIT:
+        # Pathological configuration/records: still explicitly expose every source, never cut JSON mid-token.
+        sections = {name: {"excerpt": redact_text(json.dumps(value, ensure_ascii=False, default=str), 300),
+                           "truncated": True} for name, value in sections.items()}
+    from app.redact import redact
+    return json.dumps(redact(sections), ensure_ascii=False, separators=(",", ":"), default=str)
 
 
 def jobs_summary(paths: WorkspacePaths, count: int = 6) -> list[dict[str, Any]]:

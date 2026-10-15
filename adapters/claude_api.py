@@ -57,8 +57,11 @@ class ClaudeChatClient:
         context_text: str,
         messages: list[dict[str, str]],
         schema: dict[str, Any],
+        timeout_seconds: float | None = None,
     ) -> ClaudeResult:
         client = self._client(api_key)
+        if timeout_seconds is not None and hasattr(client, "with_options"):
+            client = client.with_options(timeout=max(0.1, timeout_seconds), max_retries=0)
         try:
             import anthropic
 

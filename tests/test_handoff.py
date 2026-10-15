@@ -209,8 +209,11 @@ class BotHandoffTests(BotFixture):
         self.say(REAL_REQUEST, {"type": "visual_request", "objective": "온라인 교육 메뉴 모션 그래픽"}, "C")
         text = self.tg.sent[-1]["text"]
         self.assertIn("Codex 에게 시안 요청을 넘겼습니다", text)
-        self.assertIn("general-", text)
-        self.assertIn("20261009-120001-ionenet-codex", text)
+        # Tracking IDs remain in factual context; routine dialogue shows the result and next step.
+        history = str(self.bot.store.recent_chat_messages(self.settings.allowed_chat_id))
+        self.assertIn("general-", history)
+        self.assertIn("20261009-120001-ionenet-codex", history)
+        self.assertNotIn("처리 구분", text)
         self.assertIn("판단 카드", text)
         self.assertEqual(self.last_decision()["handling_class"], "C")
         self.assertEqual(self.bot.store.list_tasks(5), [])
@@ -234,7 +237,7 @@ class BotHandoffTests(BotFixture):
         self.update += 1
         self.bot._handle_update(self.message("/todo codex 로그인 문구 정리", update_id=self.update))
         todo_id = "20261009-120001-ionenet-codex"
-        self.assertIn(todo_id, self.tg.sent[-1]["text"])
+        self.assertIn(todo_id, str(self.bot.store.recent_chat_messages(self.settings.allowed_chat_id)))
         (self.hub / "todo" / "done" / "2026-10").mkdir(parents=True)
         (self.hub / "todo" / f"{todo_id}.md").rename(self.hub / "todo" / "done" / "2026-10" / f"{todo_id}.md")
         before = len(self.tg.sent)

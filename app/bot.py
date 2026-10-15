@@ -301,10 +301,12 @@ class ChiefBot:
             return
         command = text.strip().split(maxsplit=1)[0].split("@", 1)[0].lower()
         if command == "/orca":
+            self.store.add_chat_message(self.settings.allowed_chat_id, "user", text)
             self._orca_command(text, update_id)
             return
         decision = self.policy.decide_fixed(text)
         if decision is not None:
+            self.store.add_chat_message(self.settings.allowed_chat_id, "user", text)
             self._execute_decision(decision, text, update_id)
             return
         if self._orca_natural(text, update_id):
@@ -315,8 +317,15 @@ class ChiefBot:
             text = text + "\n" + "\n".join(self._attachment_context(item, waiting=True) for item in pending)
         self._chat_reply(text, update_id)
 
-    def _orca_receipt(self, update_id, text):
-        self._notify(f"orca:telegram:{update_id}:receipt", esc(text))
+    def _orca_receipt(self, update_id, text, *, natural=True):
+        visible = text
+        if natural:
+            visible = re.sub(r"(?m)^Run:.*\n?", "", visible)
+            visible = re.sub(r"[0-9]{8}-[0-9]{6}-orca-[a-f0-9]{12}\s*·?\s*", "", visible)
+            visible = re.sub(r"\s*\([A-Z_]+\)", "", visible)
+            visible = re.sub(r"·\s*·", "·", visible)
+            visible = re.sub(r"(?m)[ ·]+$", "", visible)
+        self._notify(f"orca:telegram:{update_id}:receipt", esc(visible), memory_text=esc(text))
 
     def _orca_natural(self, text: str, update_id: int) -> bool:
         from app.orca_bridge import OrcaQueue, ID_RE, TERMINAL
@@ -324,6 +333,7 @@ class ChiefBot:
         queue = OrcaQueue.load(self.store,self.settings.root)
         decision = self.policy.orca_intent(text)
         if decision:
+            self.store.add_chat_message(self.settings.allowed_chat_id, "user", text)
             try:
                 if decision.intent == "orca_status":
                     reply = queue.describe()
@@ -357,7 +367,15 @@ class ChiefBot:
                                 self._orca_receipt(update_id, f"문맥 확인 접수 · {row['project']} / {row['agent']} · {row['id']}\n"
                                     "외부 작업자의 종료는 미확인입니다. /orca context "+projects[0]+" 에서 기존 담당자·기록을 확인하세요. 인계 실행은 차단했습니다")
                                 return True
-                        elif not re.search(r"이 작업|지금|현재|한도|쿼터|(?:클로드|코덱스|claude|codex)\s*말고",text):
+                        elif re.search(r"그거|그 작업|아까|이 작업|말고", text):
+                            # Resolve only factual receipts, never a model-proposed ID or a global 'latest'.
+                            referenced = self._recent_orca_reference()
+                            if referenced is None or (not referenced and re.search(r"그거|그 작업|아까", text)):
+                                raise ValueError("어떤 작업을 이어갈까요? 최근 안내에서 작업을 하나로 정할 수 없어요. /orca status 에서 골라 주세요")
+                            if referenced:
+                                rows = [r for r in rows if r["id"] == referenced]
+                                ids = [referenced]
+                        elif not re.search(r"지금|현재|한도|쿼터",text):
                             raise ValueError("어떤 프로젝트 작업인가요? /orca status 에서 작업 ID를 골라 주세요")
                         if not ids:
                             active = [r for r in rows if r["state"] not in TERMINAL]
@@ -380,6 +398,7 @@ class ChiefBot:
             answered = db.execute("SELECT request_id FROM orca_questions WHERE reply_source=?",(f"telegram:{update_id}",)).fetchone()
         if not questions and not answered:
             return False
+        self.store.add_chat_message(self.settings.allowed_chat_id, "user", text)
         if not answered and not re.match(r"^(응|네|예|아니|그래|좋아|진행해|계속해|첫\s*번째|두\s*번째|[1-9]번|답변[:： ])",text.strip()):
             self._orca_receipt(update_id,"작업자 질문에 대한 답변인가요? /orca reply 작업ID 답변 으로 지정해 주세요")
             return True
@@ -393,6 +412,17 @@ class ChiefBot:
             reply = str(exc)
         self._orca_receipt(update_id,reply)
         return True
+
+    def _recent_orca_reference(self) -> str | None:
+        for item in reversed(self.store.recent_chat_messages(self.settings.allowed_chat_id, 200)):
+            if not str(item.get("provider") or "").startswith("receipt:outbox:orca:"):
+                continue
+            ids = set(re.findall(r"\b[0-9]{8}-[0-9]{6}-orca-[a-f0-9]{12}\b", item["text"]))
+            if ids:
+                return next(iter(ids)) if len(ids) == 1 else None
+            # A newer clarification/missing-task receipt invalidates an older implicit target.
+            return None
+        return ""
 
     def _orca_command(self, text: str, update_id: int) -> None:
         from app.orca_bridge import OrcaQueue, ID_RE
@@ -442,7 +472,7 @@ class ChiefBot:
                 reply = "사용법: /orca status · /orca projects · /orca switch 작업ID codex|claude|astra|sol · /orca reply 작업ID 답변"
         except ValueError as exc:
             reply = str(exc)
-        self._orca_receipt(update_id,reply)
+        self._orca_receipt(update_id,reply,natural=False)
 
     # ------------------------------------------------------------------ 첨부(사진·문서)
 
@@ -529,8 +559,11 @@ class ChiefBot:
 
     def _chat_reply(self, text: str, update_id: int | None) -> None:
         chat_id = self.settings.allowed_chat_id
-        history = self.store.recent_chat_messages(chat_id, self.chat_config.history_turns)
+        history = self.store.conversation_context(chat_id, self.chat_config.history_turns * 2)
         snapshot = build_snapshot(self.store, self.paths, self.settings.projects)
+        if isinstance(self.chat, ChatResponder):
+            from app.lookup import ReadOnlyLookup
+            self.chat.lookup = ReadOnlyLookup(self.store, self.paths, chat_id, self.file_roots, self.jobs_config)
         try:
             result = self.chat.respond(text, history, snapshot)
         except ChatUnavailable as exc:
@@ -541,17 +574,18 @@ class ChiefBot:
             self._send(esc(FALLBACK_TEXT))
             return
         self.store.add_chat_message(chat_id, "user", text)
-        self.store.add_chat_message(chat_id, "assistant", result.reply, result.provider)
         decision = self.policy.from_chat_action(result.action, text)
         self._record_chat_decision(result, decision)
-        reply = result.reply
-        if decision is not None and decision.intent in IMMEDIATE_INTENTS and APPROVAL_CLAIM_RE.search(reply):
-            # 알림 설정·결과물 목록은 승인 없이 바로 처리되고 실제 결과는 아래 명령 응답이 알린다.
-            # 모델이 "승인 카드를 띄웠다"처럼 사실과 다른 말을 하면 그 문장 대신 코드가 만든 한 줄로 바꾼다.
-            reply = IMMEDIATE_REPLIES[decision.intent]
-        self._send(esc(redact_text(reply, 3_500)))
         if decision is not None:
-            self._execute_decision(decision, text, update_id)
+            # Only the authoritative handler can describe whether an action was accepted or completed.
+            if decision.intent == "files":
+                self._files_command(decision.argument, strict=True)
+            else:
+                self._execute_decision(decision, text, update_id)
+        elif result.action.type != "none":
+            self._send("요청을 실행하지 않았어요. 대상 작업이나 요청 내용을 확인해 주세요.")
+        else:
+            self._send(esc(redact_text(result.reply, 3_500)), provider=result.provider)
 
     def _record_chat_decision(self, result: ChatResult, decision: Decision | None) -> None:
         self.store.add_event(
@@ -570,6 +604,8 @@ class ChiefBot:
                 "latency_ms": result.latency_ms,
                 "usage": result.usage,
                 "fallback_errors": list(result.errors),
+                "lookup_observations": list(result.observations),
+                "model_calls": result.model_calls,
             },
         )
 
@@ -640,10 +676,11 @@ class ChiefBot:
             if result.ok:
                 todo_id = todo_id_from_output(result.output)
                 self._record_handoff(decision.project_id, "todo", decision.argument, todo_id=todo_id)
+                receipt = (f"📝 <b>{esc(decision.project_id)}</b> 할 일로 남겼습니다(agent-hub 기록).\n"
+                           f"• {esc(decision.argument[:300])}\n"
+                           "착수는 아직 확인되지 않았어요. 다음 세션에서 확인하고, 닫히면 알려 드립니다. /todo")
                 self._send(
-                    f"📝 <b>{esc(decision.project_id)}</b> 할 일로 남겼습니다(agent-hub 커밋 · 처리 구분 C: 넘기고 결과를 받아 옴).\n"
-                    f"• {esc(decision.argument[:300])}\n추적 ID: <code>{esc(todo_id or result.output[-120:])}</code>\n"
-                    "다음 세션 시작(hub read) 때 맨 위에 보이고, 닫히면 텔레그램으로 알려 드립니다. 목록: /todo"
+                    receipt, memory_text=receipt + f"\n추적 ID: {esc(todo_id or result.output[-120:])}"
                 )
             else:
                 self._send(f"⚠️ 할 일을 남기지 못했습니다: {esc(result.output[-300:])}")
@@ -815,12 +852,11 @@ class ChiefBot:
             self._send(f"⚠️ Codex 에게 넘기지 못했습니다{where}: {esc(str(handoff.output)[-300:])}")
             return
         self._record_handoff("codex", "visual", text, todo_id=handoff.todo_id, request_id=handoff.request_id, path=handoff.path)
+        receipt = ("🎨 <b>Codex 에게 시안 요청을 넘겼습니다</b>\n"
+                   f"{esc(text[:250])}\n아직 착수 확인 전이에요. 판단 카드가 올라오면 알려 드립니다. 진행 상황: /todo")
         self._send(
-            "🎨 <b>Codex 에게 시안 요청을 넘겼습니다</b> (처리 구분 C · 승인 없음)\n"
-            f"요청 ID: <code>{esc(handoff.request_id)}</code> · 할 일: <code>{esc(handoff.todo_id or '확인 불가')}</code>\n"
-            f"요청서: <code>agent-hub/{esc(handoff.path)}</code>\n"
-            "Codex 가 판단 카드(card.md)를 올리면 결론을 텔레그램으로 알려 드립니다. "
-            "고른 안은 DeskMini 에서 Blender 로 렌더합니다. 진행 상황: /todo"
+            receipt, memory_text=receipt + f"\n요청 ID: {esc(handoff.request_id)} · 할 일: {esc(handoff.todo_id or '미확인')}"
+            + f"\n출처: agent-hub/{esc(handoff.path)}"
         )
 
     def _check_handoffs(self) -> None:
@@ -1791,7 +1827,13 @@ class ChiefBot:
         row = self.alerts.job_by_key(job.key)
         return job, (row["id"] if row else None)
 
-    def _files_command(self, hint: str) -> None:
+    def _files_command(self, hint: str, *, strict: bool = False) -> None:
+        if strict and hint:
+            candidates = [job for job in self._current_jobs(self.clock()) if match_job([job], hint)]
+            if len(candidates) > 1:
+                self._send("같은 이름에 해당하는 작업이 여러 개예요. 어느 작업의 결과물을 보여 드릴까요?")
+                self._files_command("")
+                return
         if not hint:
             jobs = [job for job in self._current_jobs(self.clock()) if job.has_deliverables][:6]
             if not jobs:
@@ -2117,14 +2159,25 @@ class ChiefBot:
             lines.append("\n<b>미확인</b>\n• 마커·로그 시각만 본 추정입니다(프로세스 생존은 확인하지 않음)")
         return _fit("\n".join(lines))
 
-    def _send(self, text: str, *, reply_markup: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    def _remember_reply(self, text, provider, reply_markup=None, *, once=False):
+        # Include visible button labels (e.g. result filenames), never callback credentials.
+        plain = html.unescape(re.sub(r"<[^>]+>", "", text))
+        if reply_markup:
+            labels = [str(button.get("text", "")) for row in reply_markup.get("inline_keyboard", []) for button in row]
+            plain += "\n선택지: " + " · ".join(labels)
+        self.store.add_chat_message(self.settings.allowed_chat_id, "assistant", plain, provider, once=once)
+
+    def _send(self, text: str, *, reply_markup: dict[str, Any] | None = None,
+              provider: str = "receipt:bot", memory_text: str | None = None) -> dict[str, Any] | None:
         text = redact_html(text, 4_096)
         try:
-            return self.telegram.send_message(
+            response = self.telegram.send_message(
                 self.settings.allowed_chat_id,
                 text,
                 reply_markup=reply_markup,
             )
+            self._remember_reply(memory_text or text, provider, reply_markup)
+            return response
         except TelegramError as exc:
             LOG.warning("Telegram send failed: %s", redact_text(str(exc), 500))
             self.store.queue_outbox(
@@ -2139,6 +2192,7 @@ class ChiefBot:
                     "disable_web_page_preview": True,
                 },
             )
+            self._remember_reply(memory_text or text, provider + ":delivery_pending", reply_markup)
             return None
 
     def _update_task_card(
@@ -2169,20 +2223,25 @@ class ChiefBot:
             response = self._send(text, reply_markup=reply_markup)
             if response and response.get("message_id"):
                 self.store.set_task_fields(task_id, telegram_message_id=response["message_id"])
+        elif response is not None:
+            self._remember_reply(text, "receipt:task_card", reply_markup)
         self.last_card_update[task_id] = time.monotonic()
 
-    def _notify(self, dedupe_key: str, text: str, *, reply_markup: dict[str, Any] | None = None) -> None:
+    def _notify(self, dedupe_key: str, text: str, *, reply_markup: dict[str, Any] | None = None,
+                memory_text: str | None = None) -> None:
         text = redact_html(text, 4_096)
         payload: dict[str, Any] = {"chat_id": self.settings.allowed_chat_id, "text": text, "parse_mode": "HTML"}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
             payload["disable_web_page_preview"] = True
-        self.store.queue_outbox(
+        inserted = self.store.queue_outbox(
             dedupe_key=dedupe_key,
             chat_id=self.settings.allowed_chat_id,
             method="sendMessage",
             payload=payload,
         )
+        if inserted:
+            self._remember_reply(memory_text or text, "receipt:outbox:" + dedupe_key, reply_markup, once=True)
         self._flush_outbox()
 
     def _flush_outbox(self) -> None:
@@ -2205,18 +2264,11 @@ class ChiefBot:
                     )
             else:
                 self.store.update_outbox(item["id"], success=True)
+                if item["method"] == "sendMessage" and item["chat_id"] == self.settings.allowed_chat_id:
+                    self._remember_reply(item["payload"].get("text", ""), "receipt:outbox:" + item["dedupe_key"],
+                                         item["payload"].get("reply_markup"), once=True)
 
 
-# 승인 없이 바로 처리되는 대화 동작과, 모델이 승인이 필요한 것처럼 말했을 때 대신 쓸 문장
-IMMEDIATE_INTENTS = {"alerts", "quiet", "files", "todo_add", "visual_request"}
-IMMEDIATE_REPLIES = {
-    "todo_add": "할 일 목록에 바로 남깁니다. 결과는 아래에 알려 드릴게요.",
-    "visual_request": "Codex 에게 시안 요청을 바로 넘깁니다. 추적 ID 는 아래에 알려 드릴게요.",
-    "alerts": "알림 설정을 바로 적용합니다. 실제 저장된 설정은 아래와 같습니다.",
-    "quiet": "알림 설정을 바로 적용합니다. 실제 저장된 설정은 아래와 같습니다.",
-    "files": "결과물 목록을 띄웁니다. 받을 파일 버튼을 누르면 그 파일이 갑니다.",
-}
-APPROVAL_CLAIM_RE = re.compile(r"승인|카드")
 PENDING_ATTACHMENT_WINDOW = timedelta(minutes=30)
 CALLBACK_RE = re.compile(r"(al|jf|jl|f|q):(\d{1,9})")
 

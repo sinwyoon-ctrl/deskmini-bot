@@ -748,7 +748,8 @@ class ChatActionRoutingTests(BotFixture):
     def test_natural_language_send_files_shows_buttons_only(self):
         self.bot.chat = FakeResponder({"type": "send_files", "job_hint": "full-v1"})
         self.bot._handle_update(self.message("영상 보내줘"))
-        self.assertEqual(self.tg.sent[0]["text"], "확인할게요")
+        # Only the real result receipt is shown; no model preface before the handler succeeds.
+        self.assertIn("결과물 — 받을 파일을 누르세요", self.tg.sent[0]["text"])
         self.assertTrue(all(data.startswith("f:") for _, data in self.buttons()))
         self.assertEqual(self.tg.files, [])
 

@@ -119,9 +119,15 @@ class Policy:
         # Target follows the agent name; the source agent ('클로드 한도') is not the target.
         choices = "|".join(re.escape(c) for c in sorted(CHOICES,key=len,reverse=True))
         targets = re.findall(r"(?<![a-z])("+choices+r")(?:으로|로|에게|한테|에)\s*(?:바꿔서\s*)?(?:이어|넘겨|전환|바꿔|계속|인계)",lowered)
+        # Elliptical correction still requires an explicit source and target model.
+        correction = re.search(r"(?<![a-z])(?:"+choices+r")\s*말고\s*("+choices+r")(?:으로|로)\s*[.!]?\s*$", lowered)
+        if correction and not targets:
+            targets = [correction.group(1)]
         switching = bool(re.search(r"이어\s*줘|넘겨\s*줘|전환해|바꿔서\s*계속|인계해|(?:넘기|바꾸|전환하|인계하)지\s*(?:마|말아)|전환\s*취소",lowered))
         if not switching and not targets:
             return None
+        if re.search(r"그(?:거|게|\s*작업)?\s*(?:아니라|말고)|아니[,， ]", lowered) and not correction:
+            return Decision(intent="orca_clarify", message="앞서 고른 작업을 바꾸려는 뜻인가요? 이어갈 작업 하나와 모델을 알려 주세요.")
         if re.search(r"하지\s*마(?:\s|$|[.!?])|(?:넘기|바꾸|전환하|인계하)지\s*(?:마|말아|말고)|전환\s*취소|어떻게|방법|가능|할까|하면|라면|지\s*마(?:\s|$|[.!?])",lowered):
             return Decision(intent="orca_clarify",message="실행 요청인지 확인해 주세요. 전환하려면 /orca switch 작업ID codex|claude|astra|sol 로 보내 주세요")
         if len(targets) != 1:

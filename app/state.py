@@ -675,9 +675,9 @@ class StateStore:
         chat_id: int,
         method: str,
         payload: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         with self.connect() as connection:
-            connection.execute(
+            inserted = connection.execute(
                 """
                 INSERT OR IGNORE INTO outbox(
                     dedupe_key, chat_id, method, payload_json, state, next_attempt_at, created_at
@@ -685,6 +685,7 @@ class StateStore:
                 """,
                 (dedupe_key, chat_id, method, json.dumps(_redact_outbox(payload), ensure_ascii=False), utc_now(), utc_now()),
             )
+            return inserted.rowcount == 1
 
     def pending_outbox(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as connection:
@@ -756,10 +757,15 @@ class StateStore:
         provider: str | None = None,
         *,
         keep: int = 200,
+        once: bool = False,
     ) -> None:
         if role not in {"user", "assistant"}:
             raise ValueError("Unsupported chat role")
         with self.connect() as connection:
+            if once and provider and connection.execute(
+                "SELECT 1 FROM chat_messages WHERE chat_id=? AND provider=? LIMIT 1", (chat_id, provider)
+            ).fetchone():
+                return
             connection.execute(
                 "INSERT INTO chat_messages(chat_id, role, text, provider, created_at) VALUES (?, ?, ?, ?, ?)",
                 (chat_id, role, redact_text(text, 4_000), provider, utc_now()),
@@ -783,6 +789,22 @@ class StateStore:
                 (chat_id, limit),
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
+
+    def conversation_context(self, chat_id: int, recent: int = 20) -> list[dict[str, Any]]:
+        """Keep recent conversation plus factual receipts even after small talk displaces them."""
+        rows = self.recent_chat_messages(chat_id, 200)
+        recent = min(30, max(10, recent))
+        older = rows[:-recent]
+        indices = [i for i, row in enumerate(older) if str(row.get("provider") or "").startswith("receipt:")][-4:]
+        selected = set()
+        for index in indices:
+            selected.add(index)
+            # Preserve the originating user instruction as well as the action/result.
+            for previous in range(index - 1, -1, -1):
+                if older[previous]["role"] == "user":
+                    selected.add(previous)
+                    break
+        return [older[i] for i in sorted(selected)] + rows[-recent:]
 
     def recent_events_by_type(self, event_type: str, limit: int = 5) -> list[dict[str, Any]]:
         with self.connect() as connection:
