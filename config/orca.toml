@@ -11,3 +11,14 @@ coordinator = "term_e50e0290-9720-4835-b667-08040d932377"
 path = "/home/ionenet/work/orca-continuity-20261015"
 worktree = "id:3326a83e-9d5a-4bcf-90a9-4dbdf4efd61b::/home/ionenet/work/orca-continuity-20261015"
 scope = "Read README.md, AGENTS.md, HANDOFF.md and REPORT.md. Edit only REPORT.md and HANDOFF.md if requested; preserve existing entries. No production, installation, services, merge, push, deploy or commit."
+
+[projects.ionenet-web]
+path = "/home/ionenet/work/ionenet-web"
+worktree = "id:690617b9-e3d5-4315-9288-402a958ae043::/home/ionenet/work/ionenet-web"
+branch = "hero-chapters-20261012"
+hub_project = "ionenet-web"
+aliases = ["홈페이지", "웹사이트", "아이오넷 웹"]
+verify_workspace = true
+# Enrol only after the external owner has stopped and hub locks are handed over.
+ownership_ready = false
+scope = "Development source only on hero-chapters-20261012. Preserve dirty work and read project/hub handoff context. Production/admin sites read-only. No credentials, services, merge, push, deploy or commit."

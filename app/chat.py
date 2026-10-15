@@ -58,6 +58,12 @@ SYSTEM_PROMPT = """
 - set_alerts 는 승인 없이 바로 적용되고, 봇이 실제 저장된 설정을 따로 알려 준다. reply 에 "승인", "카드"를 쓰지 말고
   "바꿀게요" 정도로 짧게 말한다. send_files 는 승인이 아니라 결과물 목록 버튼을 띄우고, 대표가 파일 버튼을 누르면 그 파일이 간다.
 
+Orca 수동 인계
+- orca_tasks 는 Telegram/Orca가 추적하는 업무이며 bot_tasks 와 별개다.
+- 모델 전환·이어가기 요청은 고정 정책이 처리한다. action 으로 dispatch_todo/create_task 를 대신 제안하거나 실행했다고 말하지 않는다.
+- 처리되지 않은 모호한 전환은 정확한 작업 ID와 codex/claude/astra/sol 을 물으며 /orca switch 작업ID 모델 을 안내한다.
+- 자동 quota 전환은 없다. 외부 Claude Desktop 대화는 공유되지 않으며 한도 소진은 종료 증거가 아니다.
+
 능력 지도 (무엇을 누가 할 수 있나)
 - 코드 작업(create_task)은 스냅샷 projects.registered 의 저장소 파일만 고친다. 각 저장소가 무엇인지는 projects.descriptions 에 있다.
   요청이 어느 저장소 설명과도 맞지 않으면(예: 홈페이지·브랜드 작업인데 등록 저장소는 API 서버) 발주하지 말고 어느 저장소인지 묻는다.

@@ -307,54 +307,142 @@ class ChiefBot:
         if decision is not None:
             self._execute_decision(decision, text, update_id)
             return
+        if self._orca_natural(text, update_id):
+            return
         pending = self._pending_attachments()
         if pending:
             # 캡션 없이 보낸 첨부가 있으면 이번 지시와 함께 모델에 메타데이터를 보여 준다.
             text = text + "\n" + "\n".join(self._attachment_context(item, waiting=True) for item in pending)
         self._chat_reply(text, update_id)
 
+    def _orca_receipt(self, update_id, text):
+        self._notify(f"orca:telegram:{update_id}:receipt", esc(text))
+
+    def _orca_natural(self, text: str, update_id: int) -> bool:
+        from app.orca_bridge import OrcaQueue, ID_RE, TERMINAL
+        from app.orca_handoff import Handoff
+        queue = OrcaQueue.load(self.store,self.settings.root)
+        decision = self.policy.orca_intent(text)
+        if decision:
+            try:
+                if decision.intent == "orca_status":
+                    reply = queue.describe()
+                elif decision.intent == "orca_clarify":
+                    reply = decision.message
+                else:
+                    # Replayed Telegram updates bind to the original request, never a new 'current task'.
+                    with self.store.connect() as db:
+                        replayed = db.execute("SELECT request_id FROM orca_changes WHERE source_key=?",(f"telegram:{update_id}",)).fetchone()
+                    imported_replay = next((r for r in queue.rows() if r["source_key"] == f"telegram:{update_id}" and r["imported"]),None)
+                    if imported_replay:
+                        self._orca_receipt(update_id,"문맥 확인 접수 · " + imported_replay["id"] + " · 외부 작업자 종료 미확인, 인계 실행 차단")
+                        return True
+                    if replayed:
+                        key = replayed["request_id"]
+                    else:
+                        words = text.split()
+                        ids = [word for word in words if ID_RE.fullmatch(word)]
+                        projects = [name for name,p in queue.config.get("projects",{}).items()
+                            if any(alias in text for alias in [name]+p.get("aliases",[]))]
+                        if len(ids)>1 or len(projects)>1:
+                            raise ValueError("어떤 작업을 이어갈까요? /orca status 에서 작업 ID를 골라 주세요")
+                        rows = queue.rows()
+                        if ids:
+                            rows = [r for r in rows if r["id"] == ids[0]]
+                        elif projects:
+                            rows = [r for r in rows if r["project"] == projects[0]]
+                            if not rows:
+                                row = queue.submit(f"telegram:{update_id}",projects[0],decision.argument,
+                                    "기존 작업 문맥 확인: " + text,self.settings.allowed_chat_id,imported=True)
+                                self._orca_receipt(update_id, f"문맥 확인 접수 · {row['project']} / {row['agent']} · {row['id']}\n"
+                                    "외부 작업자의 종료는 미확인입니다. /orca context "+projects[0]+" 에서 기존 담당자·기록을 확인하세요. 인계 실행은 차단했습니다")
+                                return True
+                        elif not re.search(r"이 작업|지금|현재|한도|쿼터|(?:클로드|코덱스|claude|codex)\s*말고",text):
+                            raise ValueError("어떤 프로젝트 작업인가요? /orca status 에서 작업 ID를 골라 주세요")
+                        if not ids:
+                            active = [r for r in rows if r["state"] not in TERMINAL]
+                            rows = active or rows
+                        if len(rows) != 1:
+                            raise ValueError("작업을 하나로 정할 수 없습니다. /orca switch 작업ID codex|claude|astra|sol 로 지정해 주세요")
+                        key = rows[0]["id"]
+                    Handoff(queue).request(key,f"telegram:{update_id}",decision.argument,text)
+                    reply = "인계 접수 · " + key + " · " + decision.argument + "\n이전 작업자 종료와 소유권을 확인한 뒤 이어갑니다"
+            except ValueError as exc:
+                reply = str(exc)
+            self._orca_receipt(update_id,reply)
+            return True
+        if text.strip().startswith("/"):
+            return False
+        with self.store.connect() as db:
+            questions = db.execute("""SELECT q.request_id FROM orca_questions q JOIN orca_requests r ON r.id=q.request_id
+                WHERE q.state='PENDING' AND r.chat_id=? AND r.state IN ('ATTENTION','RUNNING')""",
+                (self.settings.allowed_chat_id,)).fetchall()
+            answered = db.execute("SELECT request_id FROM orca_questions WHERE reply_source=?",(f"telegram:{update_id}",)).fetchone()
+        if not questions and not answered:
+            return False
+        if not answered and not re.match(r"^(응|네|예|아니|그래|좋아|진행해|계속해|첫\s*번째|두\s*번째|[1-9]번|답변[:： ])",text.strip()):
+            self._orca_receipt(update_id,"작업자 질문에 대한 답변인가요? /orca reply 작업ID 답변 으로 지정해 주세요")
+            return True
+        try:
+            if not answered and len(questions) != 1:
+                raise ValueError("답변을 기다리는 질문이 여러 개입니다. /orca reply 작업ID 답변 으로 지정해 주세요")
+            key = (answered or questions[0])["request_id"]
+            queue.answer(key,f"telegram:{update_id}",text)
+            reply = "답변 접수 · " + key + " · 작업자에게 전달 대기 중"
+        except ValueError as exc:
+            reply = str(exc)
+        self._orca_receipt(update_id,reply)
+        return True
+
     def _orca_command(self, text: str, update_id: int) -> None:
-        from app.orca_bridge import OrcaQueue
+        from app.orca_bridge import OrcaQueue, ID_RE
+        from app.orca_handoff import Handoff
         queue = OrcaQueue.load(self.store, self.settings.root)
-        argument = text.strip().split(maxsplit=1)
-        argument = argument[1] if len(argument) > 1 else ""
-        if not argument or argument == "status":
-            self._send(esc(queue.describe()))
-        elif argument.startswith("recover "):
-            try:
+        parts = text.strip().split(maxsplit=1)
+        argument = parts[1] if len(parts)>1 else "status"
+        try:
+            if argument == "status":
+                reply = queue.describe()
+            elif argument == "projects":
+                reply = "\n".join(name+" · "+p["path"] for name,p in queue.config.get("projects",{}).items())
+            elif argument.startswith("context "):
+                project = argument.split(maxsplit=1)[1]
+                if project not in queue.config.get("projects",{}):
+                    raise ValueError("등록 프로젝트만 조회할 수 있습니다. /orca projects")
+                # Bot sandbox stays narrow: context is refreshed by the separate bridge, never by chat.
+                with self.store.connect() as db:
+                    snap = db.execute("SELECT body FROM orca_project_context WHERE project=?",(project,)).fetchone()
+                reply = snap["body"] if snap else "아직 문맥을 읽지 못했습니다. 실행기 갱신 후 다시 조회해 주세요"
+            elif argument.startswith("switch "):
+                bits = argument.split(maxsplit=3)
+                if len(bits)<3 or not ID_RE.fullmatch(bits[1]):
+                    raise ValueError("사용법: /orca switch 작업ID codex|claude|astra|sol [다음 지시]")
+                change = Handoff(queue).request(bits[1],f"telegram:{update_id}",bits[2],bits[3] if len(bits)>3 else "")
+                reply = f"인계 접수 · {bits[1]} · {change['model'] or change['agent']}\n소유권·종료 확인 후 이어갑니다"
+            elif argument.startswith("recover "):
                 queue.recover(argument.split(maxsplit=1)[1].strip())
-            except ValueError as exc:
-                self._send(esc(exc))
-                return
-            self._send("저장된 동일 요청의 복구를 접수했습니다. 새 작업으로 재실행하지 않습니다.")
-        elif argument.startswith("reply "):
-            parts = argument.split(maxsplit=2)
-            if len(parts) != 3:
-                self._send("사용법: <code>/orca reply 요청ID 답변 내용</code>")
-                return
-            try:
-                queue.answer(parts[1], f"telegram:{update_id}", parts[2])
-            except ValueError as exc:
-                self._send(esc(exc))
-                return
-            self._send("답변을 접수했습니다. 실행기가 Orca 작업자에게 전달합니다.")
-        elif argument.startswith("new "):
-            parts = argument.split(maxsplit=3)
-            if len(parts) != 4:
-                self._send("사용법: <code>/orca new trial codex 작업 내용</code>")
-                return
-            try:
-                row = queue.submit(f"telegram:{update_id}", parts[1], parts[2], parts[3], self.settings.allowed_chat_id)
-            except ValueError as exc:
-                self._send(esc(exc))
-                return
-            self._notify(f"orca:{row['id']}:accepted", esc(
-                f"Orca 접수: {row['id']} · {row['state']}\n{row['agent']} / {row['project']}\n"
-                "실행기가 상태를 확인한 후 시작합니다. 조회: /orca " + row['id']))
-        else:
-            from app.orca_bridge import ID_RE
-            self._send(esc(queue.describe(argument)) if ID_RE.fullmatch(argument) else
-                "사용법: <code>/orca status</code> · <code>/orca 요청ID</code> · <code>/orca new trial codex 작업 내용</code>")
+                reply = "저장된 동일 요청의 복구를 접수했습니다. 새 모델을 자동 선택하지 않습니다"
+            elif argument.startswith("reply "):
+                bits = argument.split(maxsplit=2)
+                if len(bits) != 3:
+                    raise ValueError("사용법: /orca reply 작업ID 답변 내용")
+                queue.answer(bits[1], f"telegram:{update_id}",bits[2])
+                reply = "답변 접수 · " + bits[1] + " · 작업자에게 전달 대기 중"
+            elif argument.startswith(("new ","import ")):
+                bits = argument.split(maxsplit=3)
+                if len(bits) != 4:
+                    raise ValueError("사용법: /orca new 프로젝트 codex|claude|astra|sol 작업 내용")
+                row = queue.submit(f"telegram:{update_id}",bits[1],bits[2],bits[3],self.settings.allowed_chat_id,
+                    imported=bits[0]=="import")
+                reply = f"Orca 접수: {row['id']} · {row['state']} · {row['model'] or row['agent']} / {row['project']}\n"
+                reply += "외부 담당자 종료 미확인 · 문맥만 가져옵니다" if row["imported"] else "실행기가 소유권을 확인한 후 시작합니다"
+            elif ID_RE.fullmatch(argument):
+                reply = queue.describe(argument)
+            else:
+                reply = "사용법: /orca status · /orca projects · /orca switch 작업ID codex|claude|astra|sol · /orca reply 작업ID 답변"
+        except ValueError as exc:
+            reply = str(exc)
+        self._orca_receipt(update_id,reply)
 
     # ------------------------------------------------------------------ 첨부(사진·문서)
 
@@ -1179,6 +1267,7 @@ class ChiefBot:
         }
 
     def _status_text(self) -> str:
+        from app.orca_bridge import OrcaQueue
         status = collect_host_status()
         memory = status["memory"]
         docker = status["docker"]
@@ -1211,6 +1300,7 @@ class ChiefBot:
             "<b>관리 작업</b>\n" + "\n".join(task_lines) + "\n\n"
             "<b>미확인</b>\n"
             + ("• " + "\n• ".join(unconfirmed) if unconfirmed else "• 없음")
+            + "\n\n<b>Orca 작업</b>\n" + esc(OrcaQueue.load(self.store,self.settings.root).describe())
             + "\n\n<b>다음 행동</b>\n• 작업 상세는 <code>/task T-...</code>"
         )
 

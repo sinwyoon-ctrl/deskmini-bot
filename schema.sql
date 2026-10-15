@@ -222,3 +222,25 @@ CREATE TABLE IF NOT EXISTS orca_intents (
 CREATE TABLE IF NOT EXISTS orca_anomalies (
  message_id TEXT PRIMARY KEY, reason TEXT NOT NULL, observed_at TEXT NOT NULL
 );
+
+-- A manual switch is a journaled saga, separate from the original submit intent.
+CREATE TABLE IF NOT EXISTS orca_changes (
+ source_key TEXT PRIMARY KEY, request_id TEXT NOT NULL REFERENCES orca_requests(id),
+ agent TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', instruction TEXT NOT NULL DEFAULT '',
+ state TEXT NOT NULL, old_task TEXT, old_dispatch TEXT, new_task TEXT, new_dispatch TEXT,
+ stop_args TEXT, create_args TEXT, start_args TEXT, context_json TEXT, error TEXT,
+ created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS orca_one_change ON orca_changes(request_id) WHERE state != 'DONE';
+CREATE TABLE IF NOT EXISTS orca_attempts (
+ dispatch_id TEXT PRIMARY KEY, request_id TEXT NOT NULL REFERENCES orca_requests(id),
+ task_id TEXT NOT NULL, agent TEXT NOT NULL, model TEXT NOT NULL, source_key TEXT NOT NULL,
+ context_json TEXT, receipt_json TEXT NOT NULL, outcome TEXT, summary TEXT, created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS orca_project_context (
+ project TEXT PRIMARY KEY, body TEXT NOT NULL, snapshot_json TEXT NOT NULL, observed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS orca_task_contracts (task_id TEXT PRIMARY KEY, context_path TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS orca_project_bindings (request_id TEXT PRIMARY KEY REFERENCES orca_requests(id), config_json TEXT NOT NULL);

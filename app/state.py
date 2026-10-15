@@ -72,6 +72,12 @@ class StateStore:
 
     @staticmethod
     def _migrate(connection: sqlite3.Connection) -> None:
+        orca_columns = {row[1] for row in connection.execute("PRAGMA table_info(orca_requests)")}
+        for column, definition in (("model", "TEXT NOT NULL DEFAULT ''"),
+                                   ("imported", "INTEGER NOT NULL DEFAULT 0"),
+                                   ("submission", "TEXT")):
+            if column not in orca_columns:
+                connection.execute(f"ALTER TABLE orca_requests ADD COLUMN {column} {definition}")
         task_columns = {row[1] for row in connection.execute("PRAGMA table_info(tasks)")}
         if "source_update_id" not in task_columns:
             connection.execute("ALTER TABLE tasks ADD COLUMN source_update_id INTEGER")

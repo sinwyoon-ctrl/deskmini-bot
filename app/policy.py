@@ -108,6 +108,26 @@ class Policy:
             )
         return self._from_interpretation(interpreted, normalized)
 
+    def orca_intent(self, text: str) -> Decision | None:
+        """Explicit manual control, available even when every chat provider is down."""
+        if text.strip().startswith("/"):
+            return None
+        lowered = text.strip().lower()
+        if re.search(r"(누가|어떤 모델|무슨 모델).*(작업|진행|담당)|작업.*(누가|진행 상황|진행상황)", lowered):
+            return Decision(intent="orca_status")
+        from app.orca_handoff import CHOICES
+        # Target follows the agent name; the source agent ('클로드 한도') is not the target.
+        choices = "|".join(re.escape(c) for c in sorted(CHOICES,key=len,reverse=True))
+        targets = re.findall(r"(?<![a-z])("+choices+r")(?:으로|로|에게|한테|에)\s*(?:바꿔서\s*)?(?:이어|넘겨|전환|바꿔|계속|인계)",lowered)
+        switching = bool(re.search(r"이어\s*줘|넘겨\s*줘|전환해|바꿔서\s*계속|인계해|(?:넘기|바꾸|전환하|인계하)지\s*(?:마|말아)|전환\s*취소",lowered))
+        if not switching and not targets:
+            return None
+        if re.search(r"하지\s*마(?:\s|$|[.!?])|(?:넘기|바꾸|전환하|인계하)지\s*(?:마|말아|말고)|전환\s*취소|어떻게|방법|가능|할까|하면|라면|지\s*마(?:\s|$|[.!?])",lowered):
+            return Decision(intent="orca_clarify",message="실행 요청인지 확인해 주세요. 전환하려면 /orca switch 작업ID codex|claude|astra|sol 로 보내 주세요")
+        if len(targets) != 1:
+            return Decision(intent="orca_clarify",message="어떤 작업을 어느 모델로 이어갈까요? /orca switch 작업ID codex|claude|astra|sol")
+        return Decision(intent="orca_switch",argument=targets[0])
+
     def decide_fixed(self, text: str) -> Decision | None:
         """LLM 없이 결정되는 명령. None 이면 대화 응답층으로 넘긴다."""
         normalized = text.strip()

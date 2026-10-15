@@ -204,6 +204,12 @@ def build_snapshot(
         sections["host"] = f"미확인: {type(exc).__name__}"
     sections["bot_tasks"] = task_summaries(store)
     try:
+        with store.connect() as db:
+            sections["orca_tasks"] = [dict(r) for r in db.execute(
+                "SELECT id,project,agent,model,state,summary,error,updated_at FROM orca_requests ORDER BY rowid DESC LIMIT 5")]
+    except Exception:
+        sections["orca_tasks"] = "미확인"
+    try:
         from app.codex_usage import latest_codex_limits
         limits = latest_codex_limits(paths.home)
         if limits:

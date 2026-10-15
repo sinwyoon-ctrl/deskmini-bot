@@ -220,17 +220,23 @@ Gemini 무료 키는 모델당 하루 약 20회라 대화가 잦으면 Claude �
 
 ## Orca 연결 (2026-10-15)
 
-`/orca`는 기존 `/new`·`/todo codex`와 다른 실행 경로다. 명시적인 Orca 명령만 네이티브
-Orca에 보내며 대화 모델은 이 경로를 임의로 발주하지 않는다. 현재 허용 프로젝트는
-`trial`(연습 저장소) 하나다. 실제 프로젝트는 `config/orca.toml`의 정확한 작업 경로·범위와
-기존 담당자를 확인한 후 등록한다. 운영 저장소·배포는 허용하지 않는다.
+`/orca`는 기존 `/new`·`/todo` 실행기를 유지하면서, native Orca 업무를 별도 durable 큐로 관리한다.
+명확한 한국어 인계 요청도 대화 API 없이 정책으로 처리한다: “홈페이지 작업 코덱스로 이어줘”,
+“클로드 한도 찼으니 코덱스로 넘겨줘”, “이 작업은 클로드로 바꿔서 계속해”. 작업이 모호하면 실행 없이 ID를 묻는다.
+자동 quota 전환은 없다. `trial`과 실제 홈페이지 개발 `ionenet-web`이 등록되어 있으며 홈페이지는 기존 외부 담당자의
+종료·hub 인계 확인 전까지 차단된다. 운영/관리자 사이트는 읽기 전용이다.
 
-- `/orca` 또는 `/orca status`: 최근 8건, 상태·최종 확인 시각·Run/Task/Dispatch 조회.
-- `/orca new trial codex 작업 내용`: 접수 후 최대 약 15초 뒤 착수. `claude`도 지정 가능하나 현재 주간 한도 소진.
-- `/orca 요청ID`: 해당 작업 조회.
-- `/orca reply 요청ID 답변 내용`: 작업자가 보낸 질문에 답변. 전달·재전달은 같은 요청 ID로 보존한다.
-- `/orca recover 요청ID`: UNKNOWN/CREATING/STARTING 상태에서 저장된 **동일 argv·replay ID**만 복구한다.
-  새 시도를 만드는 명령이 아니다. 확인 불가 상태의 작업자를 임의로 중단하거나 다른 모델로 재실행하지 않는다.
+- `/orca status` · `/orca 업무ID`: 상태·Run/Task/Dispatch 조회. 자연어 “지금 누가 작업 중이야”도 지원.
+- `/orca new 프로젝트 codex|claude|astra|sol 작업 내용`: 접수 후 소유권 확인. astra=`gpt-6-astra`, sol=`gpt-6.1-sol`.
+- `/orca switch 업무ID 모델 [다음 지시]`: 수동 인계. 실제 이전 소유자의 종료를 확인한 뒤 새 시도를 시작한다.
+- `/orca reply 업무ID 답변`: 질문 답변. 유일한 질문에 대한 명확한 짧은 자연어 답변도 지원.
+- `/orca recover 업무ID`: 저장된 같은 argv·replay ID로 미확인 결과를 복구한다.
+- `/orca projects` · `/orca context ionenet-web` · `/orca import 프로젝트 모델 목표`: 등록 개발 경로와 파일 기반 문맥 확인.
+
+업무 ID·목표·범위·개발 경로·체크포인트·검증·다음 행동·native 시도 이력을 유지한다. 연결 유실은 종료로 취급하지 않는다.
+완료 후 계속하기는 같은 업무 ID 아래 새 native Task이며, 중단/실패 시에는 native retry-of를 사용한다.
+구체적인 등록·복구 계약, 검증 결과와 Telegram 없는 native smoke 절차는
+[구현 보고](docs/telegram-model-handoff.md)를 따른다.
 
 hub 쪽 발주도 같은 큐를 사용한다. `--source`는 호출자가 재시도할 때 반드시 같은 고유 ID를 쓴다.
 
@@ -250,9 +256,8 @@ cron이 같은 요청을 가져가지 않는다. hub 수동 '할 일 닫기'는 
 
 봇은 접수·조회만 하고 파일 권한을 늘리지 않았다. 별도 user timer가 고정된 managed CLI
 `~/.orca/cli/bin/orca`를 호출한다. 매 응답의 runtime ID를 확인하고 불일치하면 멈춘다.
-Orca 큐 내부는 한 번에 한 작업이며, 기존 runner도 자체 제한을 유지한다. 둘을 합친 전역
-단일 실행 제한은 아니다. 현재는 등록 저장소가 서로 달라 같은 저장소를 동시에 편집하지 않는다.
-다른 실행기가 맡은 프로젝트를 등록할 때는 소유권·잠금 경계를 먼저 맞춰야 한다.
+Orca 큐 내부는 한 번에 한 작업이며, 기존 runner도 자체 제한을 유지한다. 실행기는 hub 소유권 잠금을 예약하고
+외부 잠금과 개발 경로를 확인한다. 다른 실행기가 맡은 프로젝트는 먼저 관리자가 소유권을 인계해야 한다.
 
 완료는 같은 Run/Task/Dispatch와 발신 주체가 일치하고 native settlement가 확인된
 worker_done만 인정한다. release → 상태·outbox 저장 → delivery ACK 순서로 회수한다.
