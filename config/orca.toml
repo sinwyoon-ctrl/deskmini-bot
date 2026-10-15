@@ -1,0 +1,13 @@
+enabled = true
+cli = "/home/ionenet/.orca/cli/bin/orca"
+cwd = "/home/ionenet/work/orca-continuity-20261015"
+hub_root = "/home/ionenet/agent-hub"
+runtime_id = "0cd4e92e-edbb-4f42-ab62-a38b0b343aca"
+run_id = "run_69aff5d0572f"
+coordinator = "term_e50e0290-9720-4835-b667-08040d932377"
+
+# Explicit development workspace allowlist; never accept a Telegram-provided path.
+[projects.trial]
+path = "/home/ionenet/work/orca-continuity-20261015"
+worktree = "id:3326a83e-9d5a-4bcf-90a9-4dbdf4efd61b::/home/ionenet/work/orca-continuity-20261015"
+scope = "Read README.md, AGENTS.md, HANDOFF.md and REPORT.md. Edit only REPORT.md and HANDOFF.md if requested; preserve existing entries. No production, installation, services, merge, push, deploy or commit."

@@ -1,0 +1,11 @@
+[Unit]
+Description=DeskMini native Orca request bridge
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ionenet/deskmini-bot
+ExecStart=/home/ionenet/deskmini-bot/.venv/bin/python -m app.orca_bridge tick
+Environment=DESKMINI_CHIEF_ENV=/home/ionenet/.config/notify.env
+TimeoutStartSec=180
+UMask=0077

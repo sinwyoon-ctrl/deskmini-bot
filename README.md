@@ -216,3 +216,62 @@ Gemini 무료 키는 모델당 하루 약 20회라 대화가 잦으면 Claude �
 - 미완료 작업 디렉터리와 worktree는 자동 삭제하지 않는다.
 - 재시작 시 미처리 Telegram 업데이트는 최대 3회 재생한다.
 - 중단된 릴리스 작업은 성공으로 추측하지 않고 `UNKNOWN`으로 수렴한다.
+
+
+## Orca 연결 (2026-10-15)
+
+`/orca`는 기존 `/new`·`/todo codex`와 다른 실행 경로다. 명시적인 Orca 명령만 네이티브
+Orca에 보내며 대화 모델은 이 경로를 임의로 발주하지 않는다. 현재 허용 프로젝트는
+`trial`(연습 저장소) 하나다. 실제 프로젝트는 `config/orca.toml`의 정확한 작업 경로·범위와
+기존 담당자를 확인한 후 등록한다. 운영 저장소·배포는 허용하지 않는다.
+
+- `/orca` 또는 `/orca status`: 최근 8건, 상태·최종 확인 시각·Run/Task/Dispatch 조회.
+- `/orca new trial codex 작업 내용`: 접수 후 최대 약 15초 뒤 착수. `claude`도 지정 가능하나 현재 주간 한도 소진.
+- `/orca 요청ID`: 해당 작업 조회.
+- `/orca reply 요청ID 답변 내용`: 작업자가 보낸 질문에 답변. 전달·재전달은 같은 요청 ID로 보존한다.
+- `/orca recover 요청ID`: UNKNOWN/CREATING/STARTING 상태에서 저장된 **동일 argv·replay ID**만 복구한다.
+  새 시도를 만드는 명령이 아니다. 확인 불가 상태의 작업자를 임의로 중단하거나 다른 모델로 재실행하지 않는다.
+
+hub 쪽 발주도 같은 큐를 사용한다. `--source`는 호출자가 재시도할 때 반드시 같은 고유 ID를 쓴다.
+
+```bash
+cd ~/deskmini-bot
+.venv/bin/python -m app.orca_bridge submit --source hub:고유요청ID --project trial --agent codex --text '작업 내용'
+.venv/bin/python -m app.orca_bridge status
+.venv/bin/python -m app.orca_bridge reply --id 요청ID --source hub:고유답변ID --text '답변 내용'
+.venv/bin/python -m app.orca_bridge recover --id 요청ID
+```
+
+접수는 SQLite `orca_requests`에 source_key UNIQUE로 저장한다. 상태와 native ID는
+agent-hub `orca/<요청ID>.md`와 `todo/`에 미러링한다. 담당자는 `orca`이므로 기존 Codex
+cron이 같은 요청을 가져가지 않는다. hub 수동 '할 일 닫기'는 실제 Orca 작업을 종료하지 않는다.
+출처가 Telegram이면 기존 outbox로 접수·질문·완료를 중복 억제하여 알린다. hub 발주는
+기록으로만 남기며 Telegram을 보내지 않는다.
+
+봇은 접수·조회만 하고 파일 권한을 늘리지 않았다. 별도 user timer가 고정된 managed CLI
+`~/.orca/cli/bin/orca`를 호출한다. 매 응답의 runtime ID를 확인하고 불일치하면 멈춘다.
+Orca 큐 내부는 한 번에 한 작업이며, 기존 runner도 자체 제한을 유지한다. 둘을 합친 전역
+단일 실행 제한은 아니다. 현재는 등록 저장소가 서로 달라 같은 저장소를 동시에 편집하지 않는다.
+다른 실행기가 맡은 프로젝트를 등록할 때는 소유권·잠금 경계를 먼저 맞춰야 한다.
+
+완료는 같은 Run/Task/Dispatch와 발신 주체가 일치하고 native settlement가 확인된
+worker_done만 인정한다. release → 상태·outbox 저장 → delivery ACK 순서로 회수한다.
+질문은 답변을 보존·전달한 뒤 ACK한다. 종료 후 오래된 질문은 SUPERSEDED로 기록한다.
+잘못되거나 일치하지 않는 메시지는 `orca_anomalies`와 hub `orca/ATTENTION.md`에
+격리한 뒤 소비하므로 다음 정상 보고를 막지 않는다. 이 메시지는 완료 증거로 쓰지 않는다.
+
+설치·중지(사용자 서비스):
+
+```bash
+cp deploy/deskmini-orca-bridge.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now deskmini-orca-bridge.timer
+systemctl --user restart deskmini-chief.service
+# 접수 실행을 멈추려면 timer를 중지한다. 이미 시작한 Orca 작업자는 중단되지 않는다.
+systemctl --user stop deskmini-orca-bridge.timer
+```
+
+아직 하지 않은 것: 자동 quota/model 전환, 임의 저장소 발주, 자동 병합·push·배포,
+DeskMini 재부팅 후 Orca 서버 복구 검증. 메인 앱 종료 중 원격 작업 지속은 이전 단계에서 확인했다.
+현재 coordinator handle이 사라지거나 runtime이 바뀌면 자동 대체하지 않고 담당자가 Orca에서
+확인해야 한다. 실제 Telegram 송수신 테스트를 대신하는 가짜 전송기로 인증·접수·중복·조회 경로를 검증했다.

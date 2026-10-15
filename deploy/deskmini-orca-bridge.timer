@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll native Orca request queue
+
+[Timer]
+OnBootSec=45
+OnUnitInactiveSec=15
+Unit=deskmini-orca-bridge.service
+
+[Install]
+WantedBy=timers.target

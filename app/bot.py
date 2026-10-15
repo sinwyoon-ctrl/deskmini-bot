@@ -299,6 +299,10 @@ class ChiefBot:
         if not isinstance(text, str) or not text.strip():
             self._send("텍스트, 사진, 문서(pdf·txt·md·csv·json)만 처리할 수 있습니다.")
             return
+        command = text.strip().split(maxsplit=1)[0].split("@", 1)[0].lower()
+        if command == "/orca":
+            self._orca_command(text, update_id)
+            return
         decision = self.policy.decide_fixed(text)
         if decision is not None:
             self._execute_decision(decision, text, update_id)
@@ -308,6 +312,49 @@ class ChiefBot:
             # 캡션 없이 보낸 첨부가 있으면 이번 지시와 함께 모델에 메타데이터를 보여 준다.
             text = text + "\n" + "\n".join(self._attachment_context(item, waiting=True) for item in pending)
         self._chat_reply(text, update_id)
+
+    def _orca_command(self, text: str, update_id: int) -> None:
+        from app.orca_bridge import OrcaQueue
+        queue = OrcaQueue.load(self.store, self.settings.root)
+        argument = text.strip().split(maxsplit=1)
+        argument = argument[1] if len(argument) > 1 else ""
+        if not argument or argument == "status":
+            self._send(esc(queue.describe()))
+        elif argument.startswith("recover "):
+            try:
+                queue.recover(argument.split(maxsplit=1)[1].strip())
+            except ValueError as exc:
+                self._send(esc(exc))
+                return
+            self._send("저장된 동일 요청의 복구를 접수했습니다. 새 작업으로 재실행하지 않습니다.")
+        elif argument.startswith("reply "):
+            parts = argument.split(maxsplit=2)
+            if len(parts) != 3:
+                self._send("사용법: <code>/orca reply 요청ID 답변 내용</code>")
+                return
+            try:
+                queue.answer(parts[1], f"telegram:{update_id}", parts[2])
+            except ValueError as exc:
+                self._send(esc(exc))
+                return
+            self._send("답변을 접수했습니다. 실행기가 Orca 작업자에게 전달합니다.")
+        elif argument.startswith("new "):
+            parts = argument.split(maxsplit=3)
+            if len(parts) != 4:
+                self._send("사용법: <code>/orca new trial codex 작업 내용</code>")
+                return
+            try:
+                row = queue.submit(f"telegram:{update_id}", parts[1], parts[2], parts[3], self.settings.allowed_chat_id)
+            except ValueError as exc:
+                self._send(esc(exc))
+                return
+            self._notify(f"orca:{row['id']}:accepted", esc(
+                f"Orca 접수: {row['id']} · {row['state']}\n{row['agent']} / {row['project']}\n"
+                "실행기가 상태를 확인한 후 시작합니다. 조회: /orca " + row['id']))
+        else:
+            from app.orca_bridge import ID_RE
+            self._send(esc(queue.describe(argument)) if ID_RE.fullmatch(argument) else
+                "사용법: <code>/orca status</code> · <code>/orca 요청ID</code> · <code>/orca new trial codex 작업 내용</code>")
 
     # ------------------------------------------------------------------ 첨부(사진·문서)
 
@@ -1285,6 +1332,7 @@ class ChiefBot:
             "   off 여도 치명적인 알림(컨테이너 멈춤·디스크·메모리 부족)은 즉시, 아침 요약은 계속 옵니다\n"
             "/brief — 아침 요약 미리 보기\n"
             "/retry T-... — 실패·차단 작업 다시 시도(버튼 승인)\n"
+            "/orca — Orca 접수·상태 조회(/orca new trial codex 작업 내용)\n"
             "/todo codex 할 일 — Codex·Claude 에게 할 일 남기기(/todo 목록, /todo done 번호)\n"
             "사진·문서 + 설명 — 첨부로 작업 발주(캡션 없으면 무엇을 할지 묻습니다)\n"
             f"/new 프로젝트: 내용 — 프로젝트 지정 발주({esc(', '.join(self.settings.projects))}, 기본 {esc(self.policy.default_project)})\n\n"

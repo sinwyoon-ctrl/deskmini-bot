@@ -201,3 +201,24 @@ CREATE TABLE IF NOT EXISTS scheduled_retries (
 CREATE INDEX IF NOT EXISTS idx_attachments_task ON attachments(task_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_update ON attachments(update_id);
 CREATE INDEX IF NOT EXISTS idx_scheduled_retries_state ON scheduled_retries(state, run_at);
+
+-- Native Orca requests are never consumed by the legacy tasks/worker runner.
+CREATE TABLE IF NOT EXISTS orca_requests (
+ id TEXT PRIMARY KEY, source_key TEXT NOT NULL UNIQUE,
+ project TEXT NOT NULL, agent TEXT NOT NULL, request_text TEXT NOT NULL,
+ chat_id INTEGER, state TEXT NOT NULL, run_id TEXT, task_id TEXT, dispatch_id TEXT,
+ summary TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS orca_questions (
+ message_id TEXT PRIMARY KEY, request_id TEXT NOT NULL REFERENCES orca_requests(id),
+ body TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'PENDING',
+ reply_text TEXT, reply_source TEXT UNIQUE
+);
+CREATE TABLE IF NOT EXISTS orca_intents (
+ request_id TEXT PRIMARY KEY REFERENCES orca_requests(id),
+ create_args TEXT NOT NULL, start_template TEXT NOT NULL,
+ recover_requested INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS orca_anomalies (
+ message_id TEXT PRIMARY KEY, reason TEXT NOT NULL, observed_at TEXT NOT NULL
+);
