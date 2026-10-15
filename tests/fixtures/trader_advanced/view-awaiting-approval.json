@@ -1,0 +1,289 @@
+{
+  "schema_version": "advanced.v1",
+  "source_kind": "synthetic",
+  "namespace": "synthetic:c0-golden",
+  "market": "US",
+  "object_type": "ImprovementView",
+  "improvement": {
+    "schema_version": "advanced.v1",
+    "source_kind": "synthetic",
+    "namespace": "synthetic:c0-golden",
+    "market": "US",
+    "content_hash": "beea60c59c86f231731ad258dc6d0d14e3f9af042f6b43a162dac6d7bcf10b29",
+    "object_type": "ImprovementRevision",
+    "improvement_id": "imp:6f45e107352aa740642dae1795d81128f463551b4b1776b262952ca4e151c3c1",
+    "revision": 1,
+    "draft": {
+      "schema_version": "advanced.v1",
+      "source_kind": "synthetic",
+      "namespace": "synthetic:c0-golden",
+      "market": "US",
+      "content_hash": "57633beeb521f4d18ef3a079786040ac589a886c87eb809d956cf08c80a06efd",
+      "object_type": "ImprovementDraft",
+      "improvement_id": "imp:6f45e107352aa740642dae1795d81128f463551b4b1776b262952ca4e151c3c1",
+      "bundle_ref": {
+        "schema_version": "advanced.v1",
+        "source_kind": "synthetic",
+        "namespace": "synthetic:c0-golden",
+        "market": "US",
+        "object_id": "bundle:c0",
+        "revision": 1,
+        "content_hash": "df93cef556e0ff3a45494d1a7482573e11f58a8cf6b1799c590b8a3562902e18"
+      },
+      "hypothesis": "다른 진입 조건을 통과하고 레짐에서만 탈락한 후보를 비교한다",
+      "hypothesis_key": "regime-only-rejection",
+      "failure_type": "SAMPLE_INSUFFICIENT",
+      "eligibility_rule_version": "regime-only-v1",
+      "baseline_config_hash": "346bf337cf6213b159f26cf1aa47de6c9c30ccf17e155f4712431d73ac75186c",
+      "change": {
+        "field": "require_regime",
+        "before": [
+          "추세상승"
+        ],
+        "after": []
+      },
+      "support": {
+        "status": "CONFIRMED",
+        "summary": "상승 사례 1개",
+        "row_ids": [
+          "up"
+        ],
+        "count": 1,
+        "reason": null
+      },
+      "opposition": {
+        "status": "CONFIRMED",
+        "summary": "하락 사례 1개; 같은 모집단",
+        "row_ids": [
+          "down"
+        ],
+        "count": 1,
+        "reason": null
+      },
+      "denominators": {
+        "raw_rows": 5,
+        "attempts": 5,
+        "confirmed_duplicates": 0,
+        "ambiguous_rows": 1,
+        "unique_opportunities": 4,
+        "eligible_opportunities": 3,
+        "ineligible_opportunities": 1,
+        "insufficient_opportunities": 0,
+        "eligible_instruments": 3,
+        "eligible_decision_sessions": 1,
+        "mature_5": 2,
+        "mature_20": 2,
+        "missing_5": 0,
+        "missing_20": 0,
+        "not_mature_5": 1,
+        "not_mature_20": 1
+      },
+      "missing_requirements": [
+        "diagnostic_minimum_not_met"
+      ],
+      "comparison_method": "봉인된 전체 입력·별도 가상 장부·다음 세션 가격 비교",
+      "readiness": "INSUFFICIENT_DATA",
+      "next_check": {
+        "condition": "시장별 적격 30기회·10종목·20판단일 및 완전 replay 자료",
+        "at": null,
+        "calendar_version": null,
+        "reason": "발생률과 완전 달력 미확정"
+      }
+    },
+    "previous_ref": null
+  },
+  "state_version": 2,
+  "stage": "AWAITING_EXPERIMENT_APPROVAL",
+  "data_status": "READY",
+  "plan": {
+    "schema_version": "advanced.v1",
+    "source_kind": "synthetic",
+    "namespace": "synthetic:c0-golden",
+    "market": "US",
+    "content_hash": "fd852cf7dd96bfb9a0f6e32bd55960affd98d4516b97578e8698b417724f331a",
+    "object_type": "ExperimentPlan",
+    "plan_id": "plan:c0",
+    "revision": 1,
+    "improvement_ref": {
+      "schema_version": "advanced.v1",
+      "source_kind": "synthetic",
+      "namespace": "synthetic:c0-golden",
+      "market": "US",
+      "object_id": "imp:6f45e107352aa740642dae1795d81128f463551b4b1776b262952ca4e151c3c1",
+      "revision": 1,
+      "content_hash": "beea60c59c86f231731ad258dc6d0d14e3f9af042f6b43a162dac6d7bcf10b29"
+    },
+    "baseline": {
+      "schema_version": "advanced.v1",
+      "source_kind": "synthetic",
+      "namespace": "synthetic:c0-golden",
+      "market": "US",
+      "content_hash": "346bf337cf6213b159f26cf1aa47de6c9c30ccf17e155f4712431d73ac75186c",
+      "object_type": "StrategyConfig",
+      "name": "synthesis_momentum",
+      "version": "v2-baseline",
+      "entry_verdicts": [
+        "strong_buy",
+        "buy"
+      ],
+      "min_confidence": 50,
+      "min_composite": "0.3",
+      "require_regime": [
+        "추세상승"
+      ],
+      "regime_benchmark": "SPY",
+      "regime_benchmark_kr": "^KS11",
+      "exit_verdicts": [
+        "sell",
+        "strong_sell"
+      ],
+      "exit_on_neutral": true,
+      "stop_atr_mult": "2",
+      "use_chandelier": false,
+      "chandelier_mult": "3",
+      "abs_momentum_min": null,
+      "risk_pct": "1",
+      "capital_usd": "1000",
+      "capital_krw": "1000000",
+      "vol_target_ann": "0",
+      "shadow_strategies": [],
+      "bt_sma_period": 200,
+      "bt_mom_period": 63,
+      "bt_mom_min": "0",
+      "max_consecutive_losses": 3,
+      "max_drawdown_halt_pct": "20",
+      "max_open_positions": 10,
+      "dim_weight_override": [],
+      "news_llm_top_n": 10
+    },
+    "candidate": {
+      "schema_version": "advanced.v1",
+      "source_kind": "synthetic",
+      "namespace": "synthetic:c0-golden",
+      "market": "US",
+      "content_hash": "22b3e69a5f277822526d32d9a38cecbeb3e381b398de6430ab684c2bab50a6a8",
+      "object_type": "StrategyConfig",
+      "name": "synthesis_momentum",
+      "version": "v2-candidate",
+      "entry_verdicts": [
+        "strong_buy",
+        "buy"
+      ],
+      "min_confidence": 50,
+      "min_composite": "0.3",
+      "require_regime": [],
+      "regime_benchmark": "SPY",
+      "regime_benchmark_kr": "^KS11",
+      "exit_verdicts": [
+        "sell",
+        "strong_sell"
+      ],
+      "exit_on_neutral": true,
+      "stop_atr_mult": "2",
+      "use_chandelier": false,
+      "chandelier_mult": "3",
+      "abs_momentum_min": null,
+      "risk_pct": "1",
+      "capital_usd": "1000",
+      "capital_krw": "1000000",
+      "vol_target_ann": "0",
+      "shadow_strategies": [],
+      "bt_sma_period": 200,
+      "bt_mom_period": 63,
+      "bt_mom_min": "0",
+      "max_consecutive_losses": 3,
+      "max_drawdown_halt_pct": "20",
+      "max_open_positions": 10,
+      "dim_weight_override": [],
+      "news_llm_top_n": 10
+    },
+    "change": {
+      "field": "require_regime",
+      "before": [
+        "추세상승"
+      ],
+      "after": []
+    },
+    "input_ref": {
+      "schema_version": "advanced.v1",
+      "source_kind": "synthetic",
+      "namespace": "synthetic:c0-golden",
+      "market": "US",
+      "object_id": "input:c0",
+      "revision": 1,
+      "content_hash": "6a5be6db2ec0edd8fdb286c1a7b8d231f4e7bba8edd318d071d80cdc0140c57d"
+    },
+    "engine_version": "replay-v1",
+    "diagnostic_period": {
+      "start_session": "2026-08-10",
+      "end_session": "2026-09-01"
+    },
+    "evaluation_period": {
+      "start_session": "2026-10-09",
+      "end_session": "2026-10-13"
+    },
+    "overlap_policy": "PURGE_20_SESSIONS",
+    "embargo_sessions": 20,
+    "costs": {
+      "buy_fee_bps": "10",
+      "sell_fee_bps": "10",
+      "slippage_bps": "100",
+      "sell_tax_bps": "0",
+      "minimum_fee": "0",
+      "basis": "EXPLICIT_TEST",
+      "source_ref": {
+        "artifact_id": "test-input",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "record_id": "source:1"
+      }
+    },
+    "currency": "USD",
+    "initial_cash": "1000",
+    "initial_holdings": [],
+    "sizing_policy": "INTEGER_CLIP_TO_CASH",
+    "capital_policy": "FIXED_INITIAL_CAPITAL",
+    "signal_priority": "SELL_THEN_RANK_THEN_TICKER",
+    "execution_policy": "NEXT_SESSION_EXPLICIT_PRICE",
+    "criteria": {
+      "status": "TEST_ONLY",
+      "primary_metric": "NET_RETURN_PCT",
+      "minimum_improvement_pp": {
+        "value": "1",
+        "reason": null
+      },
+      "max_drawdown_worsening_pp": {
+        "value": "5",
+        "reason": null
+      },
+      "max_loss_pct": {
+        "value": "10",
+        "reason": null
+      },
+      "min_completed_trades": 1,
+      "min_evaluation_sessions": 2,
+      "reason": null
+    },
+    "budget": {
+      "max_events": 1000,
+      "max_fills": 1000,
+      "max_output_bytes": 1048576,
+      "max_runtime_seconds": 60,
+      "max_memory_bytes": 134217728,
+      "on_missing_data": "STOP_INSUFFICIENT_DATA",
+      "on_data_error": "STOP_FAILED",
+      "on_loss_limit": "STOP_FAILED"
+    },
+    "application_scope": "TEST_ONLY",
+    "protections_scope": "STRATEGY_ONLY_NOT_RISK_GUARD"
+  },
+  "jobs": [],
+  "result": null,
+  "decisions": [],
+  "deployment_receipt": null,
+  "allowed_actions": [
+    "reject",
+    "hold",
+    "approve_experiment"
+  ],
+  "blocked_reasons": []
+}

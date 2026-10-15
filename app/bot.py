@@ -300,6 +300,10 @@ class ChiefBot:
             self._send("텍스트, 사진, 문서(pdf·txt·md·csv·json)만 처리할 수 있습니다.")
             return
         command = text.strip().split(maxsplit=1)[0].split("@", 1)[0].lower()
+        if command == "/trader":
+            from app.trader_advanced import command as trader_command
+            trader_command(self, message, update_id)
+            return
         if command == "/orca":
             self.store.add_chat_message(self.settings.allowed_chat_id, "user", text)
             self._orca_command(text, update_id)
@@ -767,6 +771,10 @@ class ChiefBot:
             except Exception as exc:  # noqa: BLE001 — 버튼 로딩 표시만 지우는 호출. 실패해도 누른 것은 처리한다.
                 # 봇이 꺼진 사이 누른 버튼은 'query is too old' 로 거절된다.
                 LOG.warning("answerCallbackQuery failed: %s", redact_text(str(exc), 200))
+        if data.startswith("ta:"):
+            from app.trader_advanced import callback as trader_callback
+            trader_callback(self, query)
+            return
         if data.startswith("approve:"):
             _, action, approval_id = data.split(":", 2)
             try:
