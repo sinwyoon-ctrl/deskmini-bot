@@ -1,0 +1,6 @@
+# CEO 승인: 앱과 동일한 원장의 명시적 검토·승인 채널.
+# 개인 발신자 ID와 서명 키는 저장소 밖 private auth root에서만 관리한다.
+enabled = true
+base_url = "http://127.0.0.1:8888"
+auth_root = "/home/ionenet/work/ione-trader-auth"
+confirmation_ttl_seconds = 600
