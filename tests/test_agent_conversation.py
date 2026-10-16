@@ -146,3 +146,71 @@ class ConversationTests(unittest.TestCase):
              patch('app.agent_conversation.process_one') as process,patch('sys.argv',['orca_bridge','tick']):
             with self.assertRaises(RuntimeError):main()
         process.assert_called_once()
+
+    def test_queued_quota_requests_reuse_the_first_fresh_observation(self):
+        for _ in range(3):
+            self.say('클로드야 주간 쿼터 얼마나 남았어?')
+        self.assertEqual(len(self.rows('SELECT * FROM telegram_conversation_jobs')),3)
+        with patch('app.agent_conversation.ask',return_value=('OK',self.native_limits())) as runner:
+            for _ in range(3):
+                process_one(self.bot.store,runner)
+        self.assertEqual(runner.call_count,1)
+        self.assertEqual([r['state'] for r in self.rows('SELECT state FROM telegram_conversation_jobs')],['DONE']*3)
+        replies=self.rows("SELECT payload_json FROM outbox WHERE dedupe_key LIKE 'agent-conversation:%'")
+        self.assertEqual(len(replies),3)
+        for reply in replies:
+            text=json.loads(reply['payload_json'])['text']
+            self.assertIn('주간: 92% 남음',text)
+            self.assertTrue(text.startswith('[봇 안내 · 클로드]'))
+        with patch('app.agent_conversation.ask') as runner:
+            process_one(self.bot.store,runner)
+        runner.assert_not_called()
+        self.assertEqual(len(self.rows("SELECT * FROM outbox WHERE dedupe_key LIKE 'agent-conversation:%'")),3)
+
+    def test_queued_quota_reuses_telemetry_from_preceding_chat(self):
+        self.say('클로드야 안녕')
+        self.say('클로드야 주간 쿼터 얼마나 남았어?')
+        with patch('app.agent_conversation.ask',return_value=('안녕하세요',self.native_limits())) as runner:
+            process_one(self.bot.store,runner)
+            process_one(self.bot.store,runner)
+        self.assertEqual(runner.call_count,1)
+        replies=self.rows("SELECT payload_json FROM outbox WHERE dedupe_key LIKE 'agent-conversation:%' ORDER BY id")
+        self.assertTrue(json.loads(replies[0]['payload_json'])['text'].startswith('[클로드]'))
+        self.assertIn('92% 남음',json.loads(replies[1]['payload_json'])['text'])
+
+    def test_queued_quota_refreshes_observation_older_than_sixty_seconds(self):
+        self.say('클로드야 주간 쿼터 얼마나 남았어?')
+        old=(datetime.now(UTC)-timedelta(seconds=61)).isoformat()
+        with self.bot.store.connect() as db:
+            db.execute("INSERT INTO telegram_agent_usage VALUES('claude',?,?)",(old,json.dumps(self.native_limits())))
+        changed={'seven_day':{'used_percent':100,'resets_at':None}}
+        with patch('app.agent_conversation.ask',return_value=('OK',changed)) as runner:
+            process_one(self.bot.store,runner)
+        runner.assert_called_once()
+        self.bot._flush_outbox()
+        self.assertIn('주간: 0% 남음',self.tg.sent[-1]['text'])
+
+    def test_fresh_quota_cache_does_not_replace_either_models_chat(self):
+        with self.bot.store.connect() as db:
+            db.execute("INSERT INTO telegram_agent_usage VALUES('claude',?,?)",(datetime.now(UTC).isoformat(),json.dumps(self.native_limits())))
+        for agent in ['claude','codex']:
+            enqueue(self.bot.store,100,'test-chat:'+agent,agent,'안녕',{})
+        with patch('app.agent_conversation.ask',return_value=('실제 답변',{})) as runner:
+            process_one(self.bot.store,runner)
+            process_one(self.bot.store,runner)
+        self.assertEqual([call.args[0] for call in runner.call_args_list],['claude','codex'])
+
+    def test_cached_quota_preserves_pending_decision_and_target(self):
+        row=self.claude();self.question(row)
+        self.say('클로드야 주간 쿼터 얼마나 남았어?')
+        questions=self.rows('SELECT * FROM orca_questions')
+        commands=self.rows('SELECT * FROM orca_chat_commands')
+        targets=self.rows('SELECT * FROM telegram_agent_targets')
+        with self.bot.store.connect() as db:
+            db.execute("INSERT INTO telegram_agent_usage VALUES('claude',?,?)",(datetime.now(UTC).isoformat(),json.dumps(self.native_limits())))
+        with patch('app.agent_conversation.ask') as runner:
+            process_one(self.bot.store,runner)
+        runner.assert_not_called()
+        self.assertEqual(self.rows('SELECT * FROM orca_questions'),questions)
+        self.assertEqual(self.rows('SELECT * FROM orca_chat_commands'),commands)
+        self.assertEqual(self.rows('SELECT * FROM telegram_agent_targets'),targets)

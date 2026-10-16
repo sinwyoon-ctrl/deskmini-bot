@@ -142,6 +142,13 @@ def process_one(store, runner=ask):
     if not row:return
     label='코덱스' if row['agent']=='codex' else '클로드'
     try:
+        # A preceding queued chat or quota request may have refreshed usage
+        # since this request was enqueued. Recheck before launching the CLI.
+        if row['agent']=='claude' and row['operation']=='quota':
+            cached=usage_text(store,fresh=True)
+            if cached:
+                _finish(store,row,'DONE',cached,model=False)
+                return
         context=json.loads(row['context_json'])
         prompt='Reply with only OK.' if row['operation']=='quota' else attach(row['body'],context,limit=12000)
         workspace=store.db_path.parent/'conversation-runtime';workspace.mkdir(exist_ok=True)
