@@ -112,21 +112,26 @@ class OrcaQueue:
         if key:
             rows = [r for r in rows if r["id"] == key]
         if not rows:
-            return "Orca 등록 작업이 없습니다."
-        return "\n\n".join(f"{r['id']} · {LABELS.get(r['state'],r['state'])} ({r['state']}) · {r['model'] or r['agent']} / {r['project']}\n"
+            stored = "Orca 등록 작업이 없습니다."
+        else:
+            stored = "\n\n".join(f"{r['id']} · {LABELS.get(r['state'],r['state'])} ({r['state']}) · {r['model'] or r['agent']} / {r['project']}\n"
             f"{r['request_text'][:180]}\nRun: {r['run_id'] or '-'} · Task: {r['task_id'] or '-'} · Dispatch: {r['dispatch_id'] or '-'}\n"
             f"최근 확인: {r['updated_at']}\n{r['error'] or r['summary'] or ''}" for r in rows[-8:])
+        if not key and (self.store.db_path.parent / "orca-sessions.json").is_file():
+            from app.orca_sessions import describe_sessions
+            return describe_sessions(self.store) + "\n\nOrca 발주 기록\n" + stored
+        return stored
 
 
 class NativeOrca:
     def __init__(self, config):
         self.config = config
 
-    def call(self, *args):
+    def call(self, *args, timeout=90):
         # The selected managed CLI is fixed; never fall back to another executable or host.
         proc = subprocess.run([self.config["cli"], *args, "--json"], cwd=self.config["cwd"],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, timeout=90, check=False)
+            text=True, timeout=timeout, check=False)
         data = json.loads(proc.stdout)
         if (data.get("_meta") or {}).get("runtimeId") != self.config["runtime_id"]:
             raise RuntimeError("Orca runtime identity mismatch")
@@ -208,6 +213,8 @@ class OrcaBridge:
             except BlockingIOError:
                 return
             try:
+                from app.orca_sessions import capture_sessions
+                capture_sessions(self.queue.store, self.config)
                 self.refresh_context()
                 try:
                     self.reconcile()

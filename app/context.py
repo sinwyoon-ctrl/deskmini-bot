@@ -203,6 +203,8 @@ def build_snapshot(
     except Exception as exc:  # 관찰 실패는 맥락에서 '미확인'으로 드러낸다.
         sections["host"] = f"미확인: {type(exc).__name__}"
     sections["bot_tasks"] = task_summaries(store)
+    from app.orca_sessions import session_summary
+    sections["orca_sessions"] = session_summary(store)
     try:
         with store.connect() as db:
             sections["orca_tasks"] = [dict(r) for r in db.execute(

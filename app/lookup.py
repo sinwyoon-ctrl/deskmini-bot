@@ -96,7 +96,13 @@ class ReadOnlyLookup:
                                  (query,), deadline)
             for row in matches:
                 row["body"] = redact_text(row["body"], 3_000)
-        return matches, "latest 100 Orca records / exact cached project context; updated_at is source age"
+        from app.orca_sessions import read_sessions
+        live = read_sessions(self.store)
+        sessions = [{"kind": "agent_session", "observed_at": live.get("observed_at"), **item}
+                    for item in live["items"] if self._matches(item, query)]
+        if live["status"] not in {"ok", "partial"}:
+            sessions = [{"kind": "live_observation", "status": live["status"], "items": []}]
+        return sessions + matches, "Orca live session observation (120s maximum age) plus latest 100 supervised records; agent turn completion is not project completion"
 
     def _history(self, query, deadline):
         rows = self.store.recent_chat_messages(self.chat_id, 200)
