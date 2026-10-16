@@ -1,0 +1,35 @@
+{
+  "deployed_at": "2026-10-16T09:06:19.595177+00:00",
+  "code_commit": "d4b223dcd929f8389d785353d40693f9e9c70490",
+  "semantic_routing_enabled": true,
+  "semantic_api_model": "claude-sonnet-5-5",
+  "actual_claude_api_and_dual_cli_scenarios_passed": 8,
+  "unit_tests_passed": 541,
+  "telegram_test_transport": "FakeTelegram",
+  "phone_new_message_test": "not performed",
+  "original_codex_row_unchanged": true,
+  "original_session": {
+    "id": "c-adfc0e69",
+    "project": "trial",
+    "cwd": "/home/ionenet/work/telegram-codex-trial-20261016",
+    "thread_id": "01a142c5-c914-7eb2-95ae-38cdf1250de2",
+    "epoch": "d1bee4bc89d827f4",
+    "state": "IDLE",
+    "turn_id": null,
+    "last_text": "현재 남은 사용 쿼터는 제가 직접 조회할 수 없습니다. 텔레그램 연결시험 기록에도 쿼터 정보는 없습니다.",
+    "observed_at": "2026-10-16T08:21:30+00:00"
+  },
+  "claude_global_settings_unchanged": true,
+  "alpha_unchanged": true,
+  "services": {
+    "deskmini-chief.service": "active",
+    "deskmini-codex-bridge.service": "active",
+    "deskmini-orca-bridge.timer": "active"
+  },
+  "schema_rows": {
+    "telegram_conversation_jobs": 0,
+    "telegram_agent_usage": 0
+  },
+  "cross_review": "Astra: mandatory findings addressed; no further mandatory findings",
+  "claude_opus_coding_worker": "succeeded and released, coordinator closed"
+}
