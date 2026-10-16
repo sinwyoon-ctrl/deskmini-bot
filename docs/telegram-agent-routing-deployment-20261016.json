@@ -1,0 +1,47 @@
+{
+  "deployed_at": "2026-10-16T08:16:53.645208+00:00",
+  "code_commit": "93b3bafe9c13c7eb8d91d9e2b21068b734f4d136",
+  "unit_tests_passed": 504,
+  "actual_model_roundtrip": "PASS",
+  "telegram_test_transport": "FakeTelegram",
+  "cross_review": "Astra: no remaining mandatory findings",
+  "services": {
+    "deskmini-chief.service": "active",
+    "deskmini-codex-bridge.service": "active",
+    "deskmini-orca-bridge.timer": "active"
+  },
+  "original_codex_session": {
+    "state": "IDLE",
+    "thread_id": "01a142c5-c914-7eb2-95ae-38cdf1250de2",
+    "last_text": "alpha",
+    "turn_id": null
+  },
+  "original_session_same_thread_and_last_response": true,
+  "recovery_only_no_work_replay": [
+    {
+      "op": "recover",
+      "state": "ACKED"
+    }
+  ],
+  "alpha_unchanged": {
+    "size": 0,
+    "mtime_ns": 1792122628898985243
+  },
+  "global_claude_settings_unchanged": {
+    "/home/ionenet/.claude/settings.json": "af7ccc9f6d58059a0fcc1eb10dcf57cf1398236e3fd3a7d505dd1174cb77ad52",
+    "/home/ionenet/.claude/settings.local.json": "88924e92ece7e8ba6a62edfd7a783df04d2eb21903d63b52f4b9b380d024ca1c"
+  },
+  "schema_tables_verified": [
+    "telegram_agent_targets",
+    "telegram_agent_focus",
+    "telegram_agent_inputs",
+    "orca_chat_commands",
+    "orca_request_conversations",
+    "telegram_model_sources"
+  ],
+  "pending_codex_questions": 0,
+  "claude_coding_worker_released": true,
+  "test_workers_released": true,
+  "test_coordinators_closed": true,
+  "phone_message_e2e": "not rerun in this task"
+}
