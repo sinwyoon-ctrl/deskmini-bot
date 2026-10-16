@@ -1,0 +1,14 @@
+{"case": "natural_code_work", "status": "PASS", "at": "2026-10-16T04:57:28+00:00", "tests": "3 passed", "original_tests_unchanged": true, "independent_checks": 3, "thread": "01a14312-5075-7f60-aee1-7dfa97e4ebe7"}
+{"case": "same_thread_followup", "status": "PASS", "at": "2026-10-16T04:57:30+00:00", "thread_unchanged": true}
+{"case": "duplicate_telegram_update", "status": "PASS", "at": "2026-10-16T04:57:30+00:00", "extra_commands": 0}
+{"case": "bot_object_restart", "status": "PASS", "at": "2026-10-16T04:57:32+00:00", "persistent_focus": true, "context_preserved": true}
+{"case": "unauthorized_callback", "status": "PASS", "at": "2026-10-16T04:57:35+00:00", "approval_not_consumed": true}
+{"case": "choice_and_duplicate_click", "status": "PASS", "at": "2026-10-16T04:57:37+00:00", "question_turn": "01a14312-90a5-70a3-b297-e562c1e3d900", "same_turn_completed": true, "responses_measured": 1}
+{"case": "freeform_reply_to_question", "status": "PASS", "at": "2026-10-16T04:57:42+00:00", "answer": "gamma", "same_thread": true}
+{"case": "command_approval", "status": "PASS", "at": "2026-10-16T04:57:48+00:00", "absent_before_approval": true, "present_after_approval": true}
+{"case": "command_denial", "status": "PASS", "at": "2026-10-16T04:57:54+00:00", "denied_file_absent": true}
+{"case": "two_sessions_and_focus", "status": "PASS", "at": "2026-10-16T04:57:57+00:00", "queued_message_target_preserved": true, "separate_threads": true}
+{"case": "backend_restart_guard", "status": "PASS", "at": "2026-10-16T04:58:01+00:00", "unknown_state": true, "unrequested_execution": 0}
+{"case": "stale_click_after_restart", "status": "PASS", "at": "2026-10-16T04:58:01+00:00", "not_reused": true}
+{"case": "explicit_recovery", "status": "PASS", "at": "2026-10-16T04:58:07+00:00", "same_thread": true, "context_preserved": true, "files_unchanged": true, "approved_file_not_rewritten": true, "previous_command_records_unchanged": true}
+{"case": "outbox_delivery_simulation", "status": "PASS", "at": "2026-10-16T04:58:07+00:00", "messages": 67, "telegram_network_calls": 0}
