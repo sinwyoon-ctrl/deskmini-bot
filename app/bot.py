@@ -129,6 +129,8 @@ class ChiefBot:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.store = StateStore(settings.db_path, settings.root / "schema.sql")
+        from app.claude_permissions import start_runtime
+        self.claude_permission_epoch = start_runtime(self.store)
         self.telegram = TelegramAPI(
             settings.telegram_token,
             request_timeout=settings.telegram_timeout_seconds + 15,
@@ -171,6 +173,8 @@ class ChiefBot:
             "명령: /status · /tasks · /jobs · /files · /hub · /git · /work · /new · /help",
         )
         while not self.stopping:
+            from app.claude_permissions import heartbeat
+            heartbeat(self.store, self.claude_permission_epoch)
             sd_notify("WATCHDOG=1")  # 루프가 멈추면 systemd(WatchdogSec) 가 재시작한다(10/10 멈춤 사고)
             self._process_futures()
             self._reconcile_tasks()
@@ -780,6 +784,10 @@ class ChiefBot:
         if data.startswith("ta:"):
             from app.trader_advanced import callback as trader_callback
             trader_callback(self, query)
+            return
+        if data.startswith("clp:"):
+            from app.claude_permissions import decide
+            decide(self, data)
             return
         if data.startswith("cx:"):
             from app.codex_session import handle_callback as codex_callback

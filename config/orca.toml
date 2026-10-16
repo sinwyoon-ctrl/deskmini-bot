@@ -22,3 +22,15 @@ verify_workspace = true
 # Enrol only after the external owner has stopped and hub locks are handed over.
 ownership_ready = false
 scope = "Development source only on hero-chapters-20261012. Preserve dirty work and read project/hub handoff context. Production/admin sites read-only. No credentials, services, merge, push, deploy or commit."
+
+[projects.bot-claude]
+path = "/home/ionenet/orca/workspaces/deskmini-bot/telegram-claude-bot-20261016"
+worktree = "id:a26c7673-34a6-47d0-a50f-62182a3e9a48::/home/ionenet/orca/workspaces/deskmini-bot/telegram-claude-bot-20261016"
+branch = "sinwyoon-ctrl/telegram-claude-bot-20261016"
+hub_project = "deskmini-bot-claude-dev"
+aliases = ["클로드 봇", "클로드봇"]
+verify_workspace = true
+ownership_ready = true
+claude_permissions = true
+claude_model = "claude-opus-5-5"
+scope = "Development source and tests in this dedicated bot worktree only. Preserve dirty work. Read README and AGENTS before work. No production database, credentials, environment files, external paths, hub writes, installation, services, permission settings, new agents, commit, merge, push or deployment. Use native coordinator ask for decisions."

@@ -1,0 +1,15 @@
+{
+  "session_hash": "b35c482c5e69f87e7bc6369d01c7719e933ee73413aae8ec402b8d321dc7eddf",
+  "session_state": "IDLE",
+  "file": {
+    "size": 0,
+    "mtime_ns": 1792122628898985243
+  },
+  "orca_live_requests": [],
+  "global_settings": {
+    "/home/ionenet/.claude/settings.json": "af7ccc9f6d58059a0fcc1eb10dcf57cf1398236e3fd3a7d505dd1174cb77ad52",
+    "/home/ionenet/.claude/settings.local.json": "88924e92ece7e8ba6a62edfd7a783df04d2eb21903d63b52f4b9b380d024ca1c",
+    "/home/ionenet/deskmini-bot/.claude/settings.json": null,
+    "/home/ionenet/deskmini-bot/.claude/settings.local.json": null
+  }
+}

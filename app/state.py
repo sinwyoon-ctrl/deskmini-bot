@@ -72,6 +72,9 @@ class StateStore:
 
     @staticmethod
     def _migrate(connection: sqlite3.Connection) -> None:
+        session_columns = {row[1] for row in connection.execute("PRAGMA table_info(claude_permission_sessions)")}
+        if "dispatch_id" not in session_columns:
+            connection.execute("ALTER TABLE claude_permission_sessions ADD COLUMN dispatch_id TEXT NOT NULL DEFAULT ''")
         orca_columns = {row[1] for row in connection.execute("PRAGMA table_info(orca_requests)")}
         for column, definition in (("model", "TEXT NOT NULL DEFAULT ''"),
                                    ("imported", "INTEGER NOT NULL DEFAULT 0"),

@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import tomllib
 import uuid
 from datetime import UTC, datetime
@@ -39,6 +40,8 @@ class OrcaQueue:
         agent, model = choice(agent)
         if project not in self.config.get("projects", {}):
             raise ValueError("등록된 프로젝트와 codex·claude만 지정할 수 있습니다")
+        if agent == 'claude' and not model:
+            model = self.config['projects'][project].get('claude_model','')
         text = redact_text(text.strip(), 3000)
         if not text or len(source_key) > 160:
             raise ValueError("요청 내용 또는 출처 ID를 확인해 주세요")
@@ -124,6 +127,15 @@ class OrcaQueue:
                 card += '작업 번호: '+row['id']
                 if key:
                     card += f"\n실행 기록: {row['run_id'] or '-'}\n작업 기록: {row['task_id'] or '-'}\n전달 기록: {row['dispatch_id'] or '-'}"
+                with self.store.connect() as db:
+                    waiting = db.execute("SELECT count(*) FROM claude_permissions WHERE request_id=? AND state='PENDING' AND expires_at>?",
+                                         (row['id'],time.time())).fetchone()[0]
+                if waiting:
+                    card += f"\n🔐 실행 허용을 기다리는 요청 {waiting}개가 있습니다. 승인 알림의 버튼을 선택해 주세요."
+                with self.store.connect() as db:
+                    last_permission = db.execute("SELECT state,expires_at FROM claude_permissions WHERE request_id=? ORDER BY rowid DESC LIMIT 1",(row['id'],)).fetchone()
+                if last_permission and last_permission['state'] in {'DENIED','EXPIRED'}:
+                    card += "\n실행 허용이 거절되거나 만료되었습니다. 해당 명령은 재시도하지 않습니다. 작업 종료 여부는 별도 확인이 필요합니다."
                 cards.append(card)
             stored = '\n\n'.join(cards)
         if not key and (self.store.db_path.parent / "orca-sessions.json").is_file():
@@ -376,6 +388,14 @@ class OrcaBridge:
         snapshot.update(objective=row["request_text"],source=row["source_key"],checkpoint="최초 접수",attempts=[])
         self.atomic(self.queue.store.db_path.parent / "orca-context" / (key+".json"),json.dumps(snapshot,ensure_ascii=False))
         spec = self.spec(row)
+        if row["agent"] == "claude":
+            from app.claude_permissions import install
+            try:
+                install(self.queue.store, project, key, Path(__file__).resolve().parents[1])
+            except (OSError, ValueError) as exc:
+                self.queue.update(key,state="BLOCKED",error=str(exc))
+                self.notify(row,"BLOCKED","클로드 승인 연결 설정 확인 필요: " + str(exc))
+                return
         create_args = ["task-create", "--run", run, "--from", coordinator,
             "--task-title", key, "--spec", spec,
             "--retry-request", str(uuid.uuid5(uuid.NAMESPACE_URL, "orca-task:"+key))]
@@ -429,7 +449,7 @@ class OrcaBridge:
         for answer in answers:
             self.call("reply", "--id", answer["message_id"], "--body", answer["reply_text"],
                 "--run", self.config["run_id"], "--from", self.config["coordinator"],
-                "--retry-request", str(uuid.uuid5(uuid.NAMESPACE_URL, "orca-reply:"+answer["reply_source"])))
+                "--retry-request", str(uuid.uuid5(uuid.NAMESPACE_URL, "orca-reply:"+answer["message_id"]+":"+answer["reply_source"])))
             with self.queue.store.connect() as db:
                 db.execute("UPDATE orca_questions SET state='ANSWERED' WHERE message_id=?", (answer["message_id"],))
         if not any(r["state"] != "QUEUED" for r in rows):

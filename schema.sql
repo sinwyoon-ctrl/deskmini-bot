@@ -98,6 +98,24 @@ CREATE TABLE IF NOT EXISTS inbox (
     processed_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS claude_permission_runtime (
+    id INTEGER PRIMARY KEY CHECK(id=1), epoch TEXT NOT NULL, heartbeat REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS claude_permission_sessions (
+    request_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, pid INTEGER NOT NULL,
+    process_start TEXT NOT NULL, workspace TEXT NOT NULL, dispatch_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS claude_permission_installs (
+    workspace TEXT PRIMARY KEY, digest TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS claude_permissions (
+    id TEXT PRIMARY KEY, request_id TEXT NOT NULL, session_id TEXT NOT NULL,
+    dispatch_id TEXT NOT NULL, epoch TEXT NOT NULL, pid INTEGER NOT NULL,
+    process_start TEXT NOT NULL, hook_pid INTEGER NOT NULL, hook_start TEXT NOT NULL,
+    digest TEXT NOT NULL, display TEXT NOT NULL, state TEXT NOT NULL,
+    can_allow INTEGER NOT NULL, expires_at REAL NOT NULL, created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     dedupe_key TEXT NOT NULL UNIQUE,

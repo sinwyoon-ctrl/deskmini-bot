@@ -1,0 +1,32 @@
+{
+  "status": "PASS",
+  "telegram_transport": "FakeTelegram",
+  "actual_claude": true,
+  "production_db_changed": false,
+  "production_services_changed": false,
+  "cli_permission_forwarding_tested": true,
+  "cli_permission_note": "Official PermissionRequest hook and authenticated Telegram callbacks; no TUI approvals.",
+  "permission_decisions": [
+    {
+      "id": "d767abe28938247127e2a516",
+      "display": "{\"cwd\": \"/home/ionenet/orca/workspaces/deskmini-bot/claude-permission-final-deny-20261016\", \"tool_input\": {\"command\": \"cat /tmp/tmp6selo41n/state/orca-context/20261016-063248-orca-d0a16141f3cc.json 2>/dev/null; echo ---; ls AGENTS.md HANDOFF.md 2>&1; git status --short\", \"description\": \"Read handoff context and check for AGENTS/HANDOFF files\"}, \"tool_name\": \"Bash\"}"
+    },
+    {
+      "id": "d4fe8ccda2605e3cb83244c6",
+      "display": "{\"cwd\": \"/home/ionenet/orca/workspaces/deskmini-bot/claude-permission-final-deny-20261016\", \"tool_input\": {\"command\": \"orca orchestration ask --from term_c31f918c-347f-4f15-af70-a4ffc35be08d --question \\\"출력할 이름은 alpha와 beta 중 무엇인가요?\\\" --options \\\"alpha,beta\\\" --timeout-ms 600000\", \"description\": \"Ask coordinator which name to output\", \"timeout\": 610000}, \"tool_name\": \"Bash\"}"
+    },
+    {
+      "id": "c912a60dcff171c27ef22662",
+      "display": "{\"cwd\": \"/home/ionenet/orca/workspaces/deskmini-bot/claude-permission-final-deny-20261016\", \"tool_input\": {\"content\": \"{\\n  \\\"chosen\\\": \\\"gamma\\\",\\n  \\\"rendered\\\": \\\"GAMMA\\\",\\n  \\\"received_answer\\\": \\\"alpha나 beta 대신 gamma로 해줘. 출력 문구는 대문자 GAMMA로 써줘.\\\"\\n}\\n\", \"file_path\": \"/home/ionenet/orca/workspaces/deskmini-bot/claude-permission-final-deny-20261016/CLAUDE_PROBE.json\"}, \"tool_name\": \"Write\"}"
+    }
+  ],
+  "native_question_received": true,
+  "file_absent_before_answer": true,
+  "denied_write": true,
+  "file_absent_after_denial": true,
+  "denied_requests": [
+    "c912a60dcff171c27ef22662"
+  ],
+  "worker_terminal_released": true,
+  "coordinator_closed": true
+}

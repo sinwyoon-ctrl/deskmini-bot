@@ -1,0 +1,10 @@
+{
+  "workspace": "a26c7673-34a6-47d0-a50f-62182a3e9a48::/home/ionenet/orca/workspaces/deskmini-bot/claude-permission-final-deny-20261016",
+  "workspace_path": "/home/ionenet/orca/workspaces/deskmini-bot/claude-permission-final-deny-20261016",
+  "runtime_id": "d55deb24-cbb3-4028-936e-8ba94f94cf50",
+  "coordinator": "term_db6d1d84-c3f7-4471-ad44-1bd12b720eb2",
+  "run_id": "run_6d2478d2ea15",
+  "request_id": "20261016-063248-orca-d0a16141f3cc",
+  "dispatch_id": "ctx_e71156458938",
+  "task_id": "task_a3e215cd4195"
+}
