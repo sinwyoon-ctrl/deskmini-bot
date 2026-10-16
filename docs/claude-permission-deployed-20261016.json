@@ -1,0 +1,15 @@
+{
+  "commit": "cadb417",
+  "services": {
+    "deskmini-chief.service": "active",
+    "deskmini-codex-bridge.service": "active",
+    "deskmini-orca-bridge.timer": "active"
+  },
+  "existing_codex_session_unchanged": true,
+  "alpha_file_unchanged": true,
+  "global_and_main_claude_settings_unchanged": true,
+  "permission_runtime_heartbeat_fresh": true,
+  "new_permission_tables_ready": true,
+  "production_test_request_submitted": false,
+  "validation_transport": "FakeTelegram for callback tests; production service heartbeat checked"
+}

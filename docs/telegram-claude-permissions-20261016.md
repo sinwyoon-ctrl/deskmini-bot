@@ -27,3 +27,7 @@
 - Telegram 전송은 FakeTelegram이다. 실제 봇 토큰으로 시험 메시지를 보내거나 두 번째 polling을 실행하지 않았다. production DB/서비스는 시험 중 변경하지 않았다.
 - 첫 시험은 harness의 중복 update 호출 오류, 두 번째는 기존 reply retry UUID의 질문 간 충돌을 발견했다. harness 수정 및 질문 ID를 포함한 retry UUID로 보완한 뒤 최종 시험을 수행했다. 연결 중단 시험에서는 다음 도구가 거절되고 파일이 생성되지 않았다.
 - Astra의 읽기 검토에서 최초 native 바인딩과 전체 timeout 보완을 반영했고 재검토에서 추가 필수 수정 없음. 테스트용 terminal은 종료/해제했다.
+
+## 적용 확인
+
+구현 커밋 `cadb417`을 main에 반영하고 chief만 재시작했다. 3개 서비스가 active이고 승인 runtime heartbeat가 신선함을 확인했다. 기존 코덱스 세션 전체 행의 해시, alpha.txt 크기/수정시각, 전역·메인 Claude 설정의 해시가 적용 전과 같다. 배포 증거: `claude-permission-deployed-20261016.json`. 실제 사용자 채팅에는 시험 요청을 넣지 않았다.
