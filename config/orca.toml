@@ -2,7 +2,7 @@ enabled = true
 cli = "/home/ionenet/.orca/cli/bin/orca"
 cwd = "/home/ionenet/work/orca-continuity-20261015"
 hub_root = "/home/ionenet/agent-hub"
-runtime_id = "0cd4e92e-edbb-4f42-ab62-a38b0b343aca"
+runtime_id = "d55deb24-cbb3-4028-936e-8ba94f94cf50"
 run_id = "run_69aff5d0572f"
 coordinator = "term_e50e0290-9720-4835-b667-08040d932377"
 
