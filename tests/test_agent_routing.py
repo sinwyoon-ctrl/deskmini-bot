@@ -223,13 +223,13 @@ class RoutingTests(BotFixture):
         native=OrcaBridge(self.queue);native.notify(row,'native-dispatch:SUCCEEDED','클로드가 확인한 고유 내용 CLAUDE-FACT',model=True)
         self.bot._flush_outbox()
         message=self.say('코덱스 너는 어떻게 생각해?')
-        command=self.rows("SELECT * FROM codex_commands WHERE source=?",'telegram:'+str(message['update_id']))[0]
-        self.assertIn('CLAUDE-FACT',command['body'])
+        command=self.rows("SELECT * FROM telegram_conversation_jobs WHERE source=?",'telegram:'+str(message['update_id']))[0]
+        self.assertIn('CLAUDE-FACT',command['context_json'])
         self.assertIn('코덱스 너는 어떻게 생각해?',self.rows('SELECT text FROM chat_messages WHERE role=\'user\' ORDER BY id DESC LIMIT 1')[0]['text'])
-        before=command['body']
+        before=command['context_json']
         native.notify(row,'native-dispatch:later','AFTER-SNAPSHOT',model=True);self.bot._flush_outbox()
         handle_message(self.bot,message['message'],message['update_id'])
-        self.assertEqual(self.rows('SELECT body FROM codex_commands WHERE id=?',command['id'])[0]['body'],before)
+        self.assertEqual(self.rows('SELECT context_json FROM telegram_conversation_jobs WHERE id=?',command['id'])[0]['context_json'],before)
 
     def test_conversation_takeover_inherits_only_explicit_common_project(self):
         self.codex_config['projects']['bot']['conversation_project']='bot-shared'

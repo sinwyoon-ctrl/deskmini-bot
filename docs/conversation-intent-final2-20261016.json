@@ -1,0 +1,47 @@
+{
+  "status": "PASS",
+  "actual_claude_api": true,
+  "actual_codex_cli": true,
+  "actual_claude_cli": true,
+  "telegram_transport": "FakeTelegram",
+  "production_db_changed": false,
+  "cases": [
+    {
+      "case": "exact_codex_quota",
+      "reply": "[봇 안내 · 코덱스]\nDeskMini Codex 사용 한도\n• 주간: 87% 사용 · 13% 남음 · 초기화 10-22 15:13\n\n관측: 마지막 Codex 실행 10-16 17:58 기준 (요금제 prolite)\n메인 PC Codex 도 같은 계정이면 한도를 함께 씁니다. 그 사용분은 다음 DeskMini 실행 때 반영됩니다."
+    },
+    {
+      "case": "exact_claude_quota_no_project",
+      "reply": "[봇 안내 · 클로드]\n\nClaude 사용 한도\n5시간: 73% 남음 · 27% 사용 · 초기화 10월 16일 22:00 (한국 시간)\n주간: 91% 남음 · 9% 사용 · 초기화 10월 23일 12:00 (한국 시간)\n관측: 10월 16일 18:01 (한국 시간) · DeskMini Claude CLI 제공 기록 기준",
+      "source": "actual CLI rate_limit_event"
+    },
+    {
+      "case": "projectless_claude_conversation",
+      "reply": "[클로드]\n\n이어봄-162b3daf67"
+    },
+    {
+      "case": "cross_model_context_without_business_commands",
+      "reply": "[코덱스]\n\n이어봄-162b3daf67\n\n이 표식은 대화가 이어지는지 확인하는 데 유용하다고 생각합니다."
+    },
+    {
+      "case": "new_questions_preserve_pending_decisions",
+      "codex": "PENDING",
+      "claude": "PENDING"
+    },
+    {
+      "case": "natural_decision_goes_only_to_selected_claude",
+      "reply": "gamma",
+      "codex_question_unchanged": true
+    },
+    {
+      "case": "mixed_query_and_work_not_executed"
+    },
+    {
+      "case": "actual_semantic_api_used",
+      "events": 4,
+      "models": [
+        "claude-sonnet-5-5"
+      ]
+    }
+  ]
+}

@@ -13,6 +13,8 @@ from app.orca_bridge import OrcaQueue
 from app.redact import redact_text
 from app.state import ConflictError, utc_now
 from app.telegram_copy import project_name
+from app.agent_router import interpret
+from app.agent_intent import classify
 
 ADDRESS = re.compile(r'^(코덱스|codex|클로드|claude)(?:야|아|으로|로|에게|한테)?(?=$|[\s,:：!！])\s*[,：:!！]?\s*(.*)$',re.I|re.S)
 TAKEOVER = re.compile(r'^(코덱스|codex|클로드|claude)(?:가|이)\s*(?:대화(?:를)?\s*)?넘겨받아(?:서)?[\s,.]*(.*)$',re.I|re.S)
@@ -81,6 +83,30 @@ def plan_input(bot, message, source):
             return base|{'reply':'요청이 너무 깁니다. 8,000자 이내로 나누어 보내 주세요.'}
         if invoked and address(body):
             return base|{'reply':'한 메시지에서는 코덱스 또는 클로드 한 모델을 골라 주세요.'}
+        question_context=[]
+        if agent=='codex':
+            target_row=db.execute('SELECT target_id FROM telegram_agent_targets WHERE chat_id=? AND agent=?',(chat,agent)).fetchone()
+            pending_target=target_row[0] if target_row else (legacy['id'] if legacy else None)
+            waiting=sessions.pending(pending_target) if pending_target else []
+            pending_question=bool(waiting)
+            for item in waiting[:2]:
+                params=json.loads(item['params'])
+                question_context += [redact_text(str(q.get('question','')),500) for q in params.get('questions',[])[:4]]
+        else:
+            target_row=db.execute('SELECT target_id FROM telegram_agent_targets WHERE chat_id=? AND agent=?',(chat,agent)).fetchone()
+            waiting=db.execute("SELECT q.body FROM orca_questions q JOIN orca_requests r ON r.id=q.request_id WHERE r.chat_id=? AND r.agent=? AND r.id=? AND q.state='PENDING'",(chat,agent,target_row[0] if target_row else '')).fetchall()
+            pending_question=bool(waiting)
+            question_context=[redact_text(q['body'],500) for q in waiting[:4]]
+        intent = classify(body) if anchor else interpret(bot,body,agent,pending_question,source,question_context)
+        base['intent']=intent
+        if intent=='blocked':
+            return base|{'reply':'요청의 뜻이나 중간 해석 결과를 하나로 확인하지 못해 작업 지시나 결정 답변을 전달하지 않았습니다. 다시 풀어서 보내 주시거나 원래 질문 카드의 버튼을 이용해 주세요.'}
+        if intent=='quota':
+            return base|{'op':'quota'}
+        if intent=='status' and not status_query(body):
+            return base|{'op':'status'}
+        if intent=='ambiguous' and re.search(r'쿼터|한도|quota|usage',body,re.I):
+            return base|{'reply':'사용량 조회와 작업 지시가 함께 있어 실행하지 않았습니다. 조회 질문과 작업 지시를 나누어 보내 주세요.'}
         if anchor:
             _,native,question_id = anchor
             if not native:
@@ -96,6 +122,8 @@ def plan_input(bot, message, source):
             base |= {'agent':owner,'target':target,'project':question['project'],'select':False,'question':question_id,'native':native}
             if base['takeover']:
                 return base|{'op':'choose','select':True,'pending_takeover':True}
+            if intent=='conversation' and re.search(r'[?？]|^(?:왜|어떻게|무엇|언제|얼마|누구|뭐|why\b|what\b|how\b|when\b)',body,re.I):
+                return base|{'op':'chat'}
             return base|{'op':'status' if status_query(body) else 'answer'}
         saved = db.execute('SELECT target_id FROM telegram_agent_targets WHERE chat_id=? AND agent=?',(chat,agent)).fetchone()
         target = saved[0] if saved else (legacy['id'] if agent=='codex' and legacy else None)
@@ -125,6 +153,8 @@ def plan_input(bot, message, source):
             return base|{'op':'status','target':row['id'] if row else None}
         if not body or body in {'선택','선택해','선택해줘','연결','연결해','연결해줘'}:
             return base|{'op':'choose','target':row['id'] if row else None}
+        if intent=='conversation':
+            return base|{'op':'chat','target':row['id'] if row else None}
         project = matched[0] if matched else (row['project'] if row else None)
         if not project and (invoked or current):
             other_agent = 'claude' if agent=='codex' else 'codex'
@@ -138,6 +168,8 @@ def plan_input(bot, message, source):
             if len(shared)==1:
                 project = shared[0]
         if not project:
+            if intent in {'answer','ambiguous'}:
+                return base|{'op':'chat'}
             names = [project_name(config,k) for k,p in config.get('projects',{}).items() if agent=='codex' or p.get('claude_permissions')]
             return base|{'choose':bool(invoked),'reply':'어느 프로젝트에서 작업할까요? 연결 가능한 곳: '+', '.join(names)}
         if not row or project != row['project']:
@@ -150,6 +182,8 @@ def plan_input(bot, message, source):
                     return base|{'op':'choose','pending_takeover':True}
                 if message.get('reply_to_message'):
                     return base|{'reply':'답장 대상의 질문을 확인하지 못했습니다. 원래 질문 메시지에 답장해 주세요.'}
+                if intent!='answer':
+                    return base|{'reply':'새 요청은 기존 질문의 답변으로 보내지 않았습니다. 결정을 답하려면 원래 질문에 답장해 주세요. 일반 질문은 그대로 물어보셔도 됩니다.'}
                 if len(pending)!=1 or pending[0]['method'] not in {'item/tool/requestUserInput','agentMessage/questions'}:
                     return base|{'reply':'실행 허용은 원래 승인 메시지의 버튼으로 선택해 주세요.'}
                 return base|{'op':'answer','question':pending[0]['id']}
@@ -167,6 +201,8 @@ def plan_input(bot, message, source):
                 return base|{'op':'choose','pending_takeover':True}
             if message.get('reply_to_message'):
                 return base|{'reply':'답장 대상의 질문을 확인하지 못했습니다. 원래 질문 메시지에 답장해 주세요.'}
+            if intent!='answer':
+                return base|{'reply':'새 요청은 기존 질문의 답변으로 보내지 않았습니다. 결정을 답하려면 원래 질문에 답장해 주세요. 일반 질문은 그대로 물어보셔도 됩니다.'}
             return base|({'op':'answer','question':pending[0][0],'native':True} if len(pending)==1 else {'reply':'질문이 여러 개입니다. 답할 질문 메시지에 답장해 주세요.'})
         if row['state']=='SUCCEEDED':
             return base|{'op':'new','previous':row['id']}
@@ -185,7 +221,7 @@ def saved_plan(bot, message, source):
         return json.loads(existing['plan'])
     plan = plan_input(bot,message,source)
     if plan is not None:
-        if plan['op'] in {'new','message','followup'}:
+        if plan['op'] in {'new','message','followup','chat'}:
             from app.shared_conversation import snapshot
             plan['conversation'] = snapshot(bot.store,bot.settings.allowed_chat_id)
             if plan.get('previous'):
@@ -195,6 +231,12 @@ def saved_plan(bot, message, source):
                     raise ConflictError('이전 작업의 완료를 확인하지 못해 후속 작업을 시작하지 않았습니다.')
                 plan['conversation']['previous_task'] = {'request_id':plan['previous'],'speaker':'claude',
                     'request':previous['request_text'][:350],'result':(previous['summary'] or '')[:800],'kind':'reference_data_only'}
+        if plan['op']=='quota':
+            if plan['agent']=='codex':
+                plan['quota_reply']=html.unescape(re.sub(r'<[^>]+>','',bot._codex_text()))
+            else:
+                from app.agent_conversation import usage_text
+                plan['quota_reply']=usage_text(bot.store,fresh=True)
         with bot.store.transaction() as db:
             db.execute('INSERT INTO telegram_agent_inputs VALUES(?,?,?,?)',(source,bot.settings.allowed_chat_id,fingerprint,json.dumps(plan,ensure_ascii=False)))
             if plan['select'] and (plan['op'] not in {'status','clarify'} or plan.get('choose')):
@@ -212,6 +254,12 @@ def execute(bot, plan, source):
     queue = OrcaQueue.load(bot.store,bot.settings.root)
     if op=='clarify':
         return plan['reply']
+    if op in {'chat','quota'}:
+        if op=='quota' and plan.get('quota_reply'):
+            return plan['quota_reply']
+        from app.agent_conversation import enqueue
+        enqueue(bot.store,chat,source,agent,plan['body'],plan.get('conversation',{}),operation=op)
+        return ('사용 한도 기록을 조회하고 있습니다. 관측된 수치와 시각을 알려드리겠습니다.' if op=='quota' else '답변을 준비하고 있습니다. 기존 작업과 미답 질문은 유지합니다.')
     if op=='choose':
         with bot.store.transaction() as db:
             select(db,chat,agent,plan['target'],source)

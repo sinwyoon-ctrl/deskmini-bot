@@ -685,7 +685,11 @@ def main():
     elif args.command == "status":
         print(queue.describe())
     else:
-        OrcaBridge(queue).tick()
+        from app.agent_conversation import process_one
+        try:
+            OrcaBridge(queue).tick()
+        finally:
+            process_one(queue.store)
 
 
 if __name__ == "__main__":

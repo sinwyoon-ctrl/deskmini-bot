@@ -10,6 +10,7 @@ tools = ["Read", "Edit", "Write", "Glob", "Grep"]
 
 # 대화 응답층. 앞 순서부터 시도한다. claude 는 ANTHROPIC_API_KEY 가 env 파일에 있을 때만 시도한다.
 [chat]
+semantic_routing = true
 providers = ["claude", "gemini"]
 model = "claude-sonnet-5-5"
 effort = "low"

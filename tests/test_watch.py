@@ -504,6 +504,9 @@ class BotFixture(unittest.TestCase):
             approval_ttl_seconds=600, projects={"deskmini": project}, env_path=env_path,
         )
         self.bot = ChiefBot(self.settings)
+        from dataclasses import replace
+        self.bot.chat_config=replace(self.bot.chat_config,semantic_routing=False)
+        self.bot.chat.config=self.bot.chat_config
         self.bot.executor.shutdown(wait=False)
         self.bot.paths = WorkspacePaths(home=self.home, agent_hub=self.home / "agent-hub", work=self.work)
         self.bot.telegram = FakeTelegram()

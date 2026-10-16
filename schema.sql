@@ -309,3 +309,11 @@ CREATE TABLE IF NOT EXISTS codex_activity (
 CREATE TABLE IF NOT EXISTS telegram_model_sources (
  dedupe_key TEXT PRIMARY KEY, agent TEXT NOT NULL CHECK(agent IN ('codex','claude'))
 );
+CREATE TABLE IF NOT EXISTS telegram_conversation_jobs (
+ id TEXT PRIMARY KEY, source TEXT UNIQUE NOT NULL, chat_id INTEGER NOT NULL,
+ agent TEXT NOT NULL, body TEXT NOT NULL, context_json TEXT NOT NULL,
+ operation TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT
+);
+CREATE TABLE IF NOT EXISTS telegram_agent_usage (
+ agent TEXT PRIMARY KEY, observed_at TEXT NOT NULL, limits_json TEXT NOT NULL
+);

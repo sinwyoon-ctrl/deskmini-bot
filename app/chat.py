@@ -213,6 +213,7 @@ class ChatConfig:
     max_tokens: int = 2_000
     timeout_seconds: float = 60.0
     history_turns: int = 10
+    semantic_routing: bool = False
 
     @classmethod
     def load(cls, path: Path) -> "ChatConfig":
@@ -232,6 +233,7 @@ class ChatConfig:
             max_tokens=int(raw.get("max_tokens", default.max_tokens)),
             timeout_seconds=float(raw.get("timeout_seconds", default.timeout_seconds)),
             history_turns=int(raw.get("history_turns", default.history_turns)),
+            semantic_routing=raw.get('semantic_routing') is True,
         )
 
 
