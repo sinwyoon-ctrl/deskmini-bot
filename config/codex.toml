@@ -1,0 +1,7 @@
+enabled = true
+cli = "/home/ionenet/.local/bin/codex"
+
+[projects.trial]
+path = "/home/ionenet/work/telegram-codex-trial-20261016"
+aliases = ["연결시험", "연결 시험"]
+scope = "This is an isolated Telegram connection test workspace. Modify files only here. No production, credentials, installation, services, git commit/push, merge or deploy. Ask the user when a choice is required. Communicate in Korean."

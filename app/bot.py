@@ -178,7 +178,9 @@ class ChiefBot:
             self._maybe_watch()
             offset = self.store.next_update_offset()
             try:
-                updates = self.telegram.get_updates(offset, self.settings.telegram_timeout_seconds)
+                from app.codex_session import load_config as codex_config
+                poll_timeout = min(self.settings.telegram_timeout_seconds, 2) if codex_config(self.settings.root).get('enabled') else self.settings.telegram_timeout_seconds
+                updates = self.telegram.get_updates(offset, poll_timeout)
             except TelegramError as exc:
                 LOG.warning("Telegram polling failed: %s", redact_text(str(exc), 500))
                 time.sleep(min(exc.retry_after or 3, 30))
@@ -300,6 +302,9 @@ class ChiefBot:
             self._send("텍스트, 사진, 문서(pdf·txt·md·csv·json)만 처리할 수 있습니다.")
             return
         command = text.strip().split(maxsplit=1)[0].split("@", 1)[0].lower()
+        from app.codex_session import handle_message as codex_message
+        if codex_message(self, message, update_id):
+            return
         if command == "/trader":
             from app.trader_advanced import command as trader_command
             trader_command(self, message, update_id)
@@ -774,6 +779,10 @@ class ChiefBot:
         if data.startswith("ta:"):
             from app.trader_advanced import callback as trader_callback
             trader_callback(self, query)
+            return
+        if data.startswith("cx:"):
+            from app.codex_session import handle_callback as codex_callback
+            codex_callback(self, data)
             return
         if data.startswith("approve:"):
             _, action, approval_id = data.split(":", 2)

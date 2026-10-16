@@ -1,0 +1,17 @@
+[Unit]
+Description=DeskMini Telegram Codex session bridge
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ionenet/deskmini-bot
+ExecStart=/home/ionenet/deskmini-bot/.venv/bin/python -m app.codex_bridge
+Environment=DESKMINI_CHIEF_ENV=/home/ionenet/.config/notify.env
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=default.target

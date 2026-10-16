@@ -244,3 +244,25 @@ CREATE TABLE IF NOT EXISTS orca_project_context (
 
 CREATE TABLE IF NOT EXISTS orca_task_contracts (task_id TEXT PRIMARY KEY, context_path TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS orca_project_bindings (request_id TEXT PRIMARY KEY REFERENCES orca_requests(id), config_json TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS codex_sessions (
+ id TEXT PRIMARY KEY, project TEXT NOT NULL, cwd TEXT NOT NULL, chat_id INTEGER NOT NULL,
+ thread_id TEXT UNIQUE, epoch TEXT, state TEXT NOT NULL, turn_id TEXT,
+ last_text TEXT NOT NULL DEFAULT '', observed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS codex_focus (chat_id INTEGER PRIMARY KEY, session_id TEXT REFERENCES codex_sessions(id));
+CREATE TABLE IF NOT EXISTS codex_commands (
+ id TEXT PRIMARY KEY, source TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL REFERENCES codex_sessions(id),
+ op TEXT NOT NULL, body TEXT NOT NULL, expected_turn TEXT, state TEXT NOT NULL,
+ error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS codex_questions (
+ id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES codex_sessions(id), epoch TEXT NOT NULL,
+ request_id TEXT NOT NULL, turn_id TEXT NOT NULL, method TEXT NOT NULL, params TEXT NOT NULL,
+ state TEXT NOT NULL, response TEXT, expires_at TEXT NOT NULL,
+ UNIQUE(epoch, request_id)
+);
+CREATE TABLE IF NOT EXISTS codex_runtime (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL,
+ state TEXT NOT NULL, observed_at TEXT NOT NULL
+);
