@@ -32,11 +32,15 @@ class CodexSessions:
             row = db.execute('SELECT s.* FROM codex_focus f JOIN codex_sessions s ON s.id=f.session_id WHERE f.chat_id=?', (chat_id,)).fetchone()
             return dict(row) if row else None
 
-    def focus(self, chat_id, key):
+    def focus(self, chat_id, key, source=None):
         with self.store.transaction() as db:
             if key and not db.execute('SELECT 1 FROM codex_sessions WHERE id=? AND chat_id=?', (key, chat_id)).fetchone():
                 raise ConflictError('이 대화에 등록된 Codex 작업을 골라 주세요')
-            db.execute('INSERT INTO codex_focus VALUES (?,?) ON CONFLICT(chat_id) DO UPDATE SET session_id=excluded.session_id', (chat_id, key))
+            from app.agent_routing import clear, select
+            if key is None:
+                clear(db,chat_id)
+            if source is None or not source.startswith('telegram:') or select(db,chat_id,'codex',key,source):
+                db.execute('INSERT INTO codex_focus VALUES (?,?) ON CONFLICT(chat_id) DO UPDATE SET session_id=excluded.session_id', (chat_id, key))
 
     def ready(self):
         if not self.config.get('enabled'):
@@ -57,7 +61,7 @@ class CodexSessions:
             raise ConflictError('연결 가능한 프로젝트를 골라 주세요: ' + ', '.join(self.config.get('projects', {})))
         return p
 
-    def create(self, chat_id, project, source):
+    def create(self, chat_id, project, source, *, focus=True):
         self.ready()
         p = self.project(project)
         key = 'c-' + secrets.token_hex(4)
@@ -70,16 +74,24 @@ class CodexSessions:
                            (key, project, str(Path(p['path']).resolve()), chat_id, 'CREATING', utc_now()))
                 db.execute('INSERT INTO codex_commands VALUES (?,?,?,?,?,?,?,?,?)',
                            ('cc-'+secrets.token_hex(5), source, key, 'create', '', None, 'QUEUED', '', utc_now()))
-        self.focus(chat_id, key)
+            if focus:
+                from app.agent_routing import select
+                if not source.startswith('telegram:') or select(db,chat_id,'codex',key,source):
+                    db.execute('INSERT INTO codex_focus VALUES (?,?) ON CONFLICT(chat_id) DO UPDATE SET session_id=excluded.session_id',(chat_id,key))
         return key
 
-    def submit(self, chat_id, source, body, op='message'):
+    def submit(self, chat_id, source, body, op='message', *, session_id=None):
         epoch = self.ready()
         with self.store.connect() as db:
             old = db.execute('SELECT c.session_id FROM codex_commands c JOIN codex_sessions s ON s.id=c.session_id WHERE c.source=? AND s.chat_id=?', (source,chat_id)).fetchone()
         if old:
             return old['session_id']
-        session = self.focused(chat_id)
+        if session_id:
+            with self.store.connect() as db:
+                row = db.execute('SELECT * FROM codex_sessions WHERE id=? AND chat_id=?',(session_id,chat_id)).fetchone()
+            session = dict(row) if row else None
+        else:
+            session = self.focused(chat_id)
         if not session:
             raise ConflictError('먼저 Codex 작업을 선택해 주세요: /codex chat')
         if session['state'] not in {'CREATING', 'IDLE', 'RUNNING', 'WAITING'} or (session['epoch'] and session['epoch'] != epoch):
@@ -90,6 +102,9 @@ class CodexSessions:
         with self.store.transaction() as db:
             db.execute('INSERT OR IGNORE INTO codex_commands VALUES (?,?,?,?,?,?,?,?,?)',
                        ('cc-'+secrets.token_hex(5), source, session['id'], op, body, session['turn_id'], 'QUEUED', '', utc_now()))
+            from app.agent_routing import select
+            if select(db,chat_id,'codex',session['id'],source):
+                db.execute('INSERT INTO codex_focus VALUES (?,?) ON CONFLICT(chat_id) DO UPDATE SET session_id=excluded.session_id',(chat_id,session['id']))
         return session['id']
 
     def pending(self, session_id):
@@ -104,9 +119,9 @@ class CodexSessions:
                 raise ConflictError('이 대화에서 연결이 끊긴 Codex 작업만 복구할 수 있습니다')
             db.execute('INSERT OR IGNORE INTO codex_commands VALUES (?,?,?,?,?,?,?,?,?)',
                        ('cc-'+secrets.token_hex(5),source,key,'recover','',None,'QUEUED','',utc_now()))
-        self.focus(chat_id,key)
+        self.focus(chat_id,key,source)
 
-    def answer(self, chat_id, key, answer):
+    def answer(self, chat_id, key, answer, *, source=None):
         epoch = self.ready()
         answer = redact_text(answer.strip(),8000)
         if not answer:
@@ -156,6 +171,10 @@ class CodexSessions:
             else:
                 raise ConflictError('이 질문 유형은 Orca에서 확인해 주세요')
             db.execute("UPDATE codex_questions SET state='ANSWERING',response=? WHERE id=? AND state='PENDING'", (json.dumps(result), key))
+            if source:
+                from app.agent_routing import select
+                if select(db,chat_id,'codex',row['session_id'],source):
+                    db.execute('INSERT INTO codex_focus VALUES (?,?) ON CONFLICT(chat_id) DO UPDATE SET session_id=excluded.session_id',(chat_id,row['session_id']))
 
     def describe(self, chat_id, key=None):
         rows = self.rows(chat_id)
@@ -204,12 +223,14 @@ class CodexSessions:
 
 def handle_message(bot, message, update_id):
     text = message.get('text', '').strip()
+    if re.match(r'^(?:코덱스|codex|클로드|claude)\s*(?:한테|에게)\s*.*(?:남겨|할\s*일|todo)',text,re.I|re.S):
+        return False
     sessions = CodexSessions(bot.store, load_config(bot.settings.root))
     chat_id = bot.settings.allowed_chat_id
     source = f'telegram:{update_id}'
     if text in {'/assistant', '/비서', '비서로 돌아가', '비서 모드로 돌아가'}:
         sessions.focus(chat_id, None)
-        bot._notify('codex:'+source, '비서 대화로 돌아왔습니다. Codex 작업은 계속 유지합니다.')
+        bot._notify('codex:'+source, '[봇 안내]\n비서 대화로 돌아왔습니다. Codex 작업은 계속 유지합니다.')
         return True
     command = text.split(maxsplit=1)[0].split('@')[0] if text else ''
     argument = text.split(maxsplit=1)[1] if ' ' in text else ''
@@ -242,7 +263,7 @@ def handle_message(bot, message, update_id):
                     sessions.submit(chat_id, source, parts[2])
                 reply = project_name(sessions.config,parts[1])+' 작업에 연결하고 있습니다.\n이어서 할 일은 이 대화에 보내 주세요. 진행 상황과 확인할 내용을 여기로 알려드리겠습니다.'
             elif action == 'use' and len(parts) == 2:
-                sessions.focus(chat_id, parts[1])
+                sessions.focus(chat_id, parts[1],source)
                 reply = sessions.describe(chat_id)
             elif action == 'recover' and len(parts) == 2:
                 sessions.recover(chat_id,parts[1],source)
@@ -291,9 +312,9 @@ def handle_message(bot, message, update_id):
             else:
                 key = sessions.submit(chat_id, source, text)
                 reply = project_name(sessions.config,focused['project'])+' 작업 요청을 받았습니다.\n진행 상황과 확인할 내용을 여기로 알려드리겠습니다.'
-        bot._notify('codex:'+source, html.escape(reply))
+        bot._notify('codex:'+source, html.escape('[봇 안내 · 코덱스]\n'+reply))
     except ConflictError as exc:
-        bot._notify('codex:'+source, html.escape(str(exc)))
+        bot._notify('codex:'+source, html.escape('[봇 안내 · 코덱스]\n'+str(exc)))
     return True
 
 
@@ -307,4 +328,4 @@ def handle_callback(bot, data):
             question = db.execute('SELECT method FROM codex_questions WHERE id=?',(key,)).fetchone()
         if question['method'] == 'item/permissions/requestApproval':
             reply = '이번 요청의 작업이 끝날 때까지 권한을 허용한다는 답을 받았습니다.'
-    bot._send(reply+'\n코덱스의 처리 결과를 확인한 뒤 알려드리겠습니다.')
+    bot._send('[봇 안내 · 코덱스]\n'+reply+'\n코덱스의 처리 결과를 확인한 뒤 알려드리겠습니다.')

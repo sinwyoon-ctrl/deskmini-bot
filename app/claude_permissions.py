@@ -192,7 +192,7 @@ def enqueue(db, row, payload, pid, started, ttl=TTL):
         details = f"하려는 일: {reason or '셸 명령 실행'}\n실행 위치: {payload['cwd']}\n\n실행할 명령:\n{command}"
         if inputs:
             details += "\n추가 조건: " + json.dumps(inputs, ensure_ascii=False)
-    body = ("🔐 클로드가 실행 허용을 기다립니다\n작업: " + row["project"] + "\n\n" + details
+    body = ("[봇 안내 · 클로드]\n🔐 실행 허용을 기다립니다\n작업: " + row["project"] + "\n\n" + details
         + ("" if complete else "\n⚠️ 내용을 전부 표시할 수 없어 원격 허용을 막았습니다.")
         + f"\n\n{ttl//60}분 안에 선택해 주세요. 이 요청 한 번에만 적용합니다.\n요청: " + key)
     outgoing = {"chat_id": row["chat_id"], "text": body, "reply_markup": {"inline_keyboard": [buttons]}}
@@ -221,9 +221,9 @@ def decide(bot, data):
                 raise ValueError("Wrong owner")
             db.execute("UPDATE claude_permissions SET state=? WHERE id=? AND state='PENDING'",
                        ("APPROVED" if action == "allow" else "DENIED", key))
-        bot._send("허용을 접수했습니다. 클로드에 전달할 조건을 확인합니다." if action == "allow" else "거절을 접수했습니다.")
+        bot._send('[봇 안내 · 클로드]\n'+("허용을 접수했습니다. 클로드에 전달할 조건을 확인합니다." if action == "allow" else "거절을 접수했습니다."))
     except (ValueError, KeyError):
-        bot._send("이 승인 요청은 만료되었거나 이미 처리했습니다. 새 요청을 확인해 주세요.")
+        bot._send("[봇 안내 · 클로드]\n이 승인 요청은 만료되었거나 이미 처리했습니다. 새 요청을 확인해 주세요.")
 
 
 def run_hook(db_path, key, workspace, payload, code_root):

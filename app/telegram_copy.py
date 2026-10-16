@@ -36,6 +36,11 @@ def project_name(config, key):
     return project.get('label') or next(iter(project.get('aliases') or []), key)
 
 
+def sender_title(agent, project='', *, model=False):
+    name = {'codex':'코덱스','claude':'클로드'}.get(agent,agent)
+    return ('['+name+']' if model else '[봇 안내 · '+name+']')+(' '+project if project else '')
+
+
 def message_card(title, body, footer, limit=3500):
     from app.redact import redact_text
     title = redact_text(title, 120)

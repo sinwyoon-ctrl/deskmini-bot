@@ -101,6 +101,21 @@ CREATE TABLE IF NOT EXISTS inbox (
 CREATE TABLE IF NOT EXISTS claude_permission_runtime (
     id INTEGER PRIMARY KEY CHECK(id=1), epoch TEXT NOT NULL, heartbeat REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS telegram_agent_targets (
+    chat_id INTEGER NOT NULL, agent TEXT NOT NULL, target_id TEXT,
+    source_order INTEGER NOT NULL, PRIMARY KEY(chat_id,agent)
+);
+CREATE TABLE IF NOT EXISTS telegram_agent_focus (
+    chat_id INTEGER PRIMARY KEY, agent TEXT NOT NULL, source_order INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS telegram_agent_inputs (
+    source TEXT PRIMARY KEY, chat_id INTEGER NOT NULL, fingerprint TEXT NOT NULL, plan TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS orca_chat_commands (
+    id TEXT PRIMARY KEY, source TEXT UNIQUE NOT NULL, request_id TEXT NOT NULL,
+    dispatch_id TEXT NOT NULL, body TEXT NOT NULL, state TEXT NOT NULL,
+    receipt TEXT, created_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS claude_permission_sessions (
     request_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, pid INTEGER NOT NULL,
     process_start TEXT NOT NULL, workspace TEXT NOT NULL, dispatch_id TEXT NOT NULL

@@ -18,7 +18,7 @@ from pathlib import Path
 from app.orca_handoff import Handoff, LABELS, choice, project_context
 from app.redact import redact_text
 from app.state import StateStore, utc_now
-from app.telegram_copy import local_time
+from app.telegram_copy import local_time, message_card, project_name, sender_title
 
 TERMINAL = {"SUCCEEDED", "FAILED"}
 ACTIVE = {"CREATING", "STARTING", "RUNNING", "UNKNOWN", "ATTENTION", "HANDOFF", "STOPPING", "BLOCKED"}
@@ -34,7 +34,7 @@ class OrcaQueue:
         path = root / "config/orca.toml"
         return cls(store, tomllib.loads(path.read_text()) if path.is_file() else {})
 
-    def submit(self, source_key, project, agent, text, chat_id=None, *, imported=False):
+    def submit(self, source_key, project, agent, text, chat_id=None, *, imported=False, select_chat=False):
         if not self.config.get("enabled"):
             raise ValueError("Orca 연결이 꺼져 있습니다")
         agent, model = choice(agent)
@@ -56,6 +56,9 @@ class OrcaQueue:
             row = dict(db.execute("SELECT * FROM orca_requests WHERE source_key=?", (source_key,)).fetchone())
             if (row["submission"] and row["submission"] != submission) or (not row["submission"] and (row["project"], row["request_text"]) != (project, text)):
                 raise ValueError("같은 출처 ID에 다른 요청을 등록할 수 없습니다")
+            if select_chat and chat_id is not None and agent=='claude' and not imported:
+                from app.agent_routing import select
+                select(db,chat_id,agent,row['id'],source_key)
         return row
 
     def rows(self):
@@ -91,28 +94,35 @@ class OrcaQueue:
             if not found.rowcount:
                 raise ValueError("저장된 실행 의도가 없습니다. Orca에서 직접 확인해 주세요")
 
-    def answer(self, key, source, text):
+    def answer(self, key, source, text, *, question_id=None, select_chat=False):
         text = redact_text(text.strip(), 2000)
         if not text:
             raise ValueError("답변을 입력해 주세요")
         with self.store.transaction() as db:
             existing = db.execute("SELECT * FROM orca_questions WHERE reply_source=?", (source,)).fetchone()
             if existing:
-                if existing["request_id"] != key or existing["reply_text"] != text:
+                if existing["request_id"] != key or existing["reply_text"] != text or (question_id and existing['message_id']!=question_id):
                     raise ValueError("같은 답변 ID에 다른 내용을 저장할 수 없습니다")
                 return
-            questions = db.execute("SELECT * FROM orca_questions WHERE request_id=? AND state='PENDING'", (key,)).fetchall()
+            questions = db.execute("SELECT * FROM orca_questions WHERE request_id=? AND state='PENDING' AND (? IS NULL OR message_id=?)", (key,question_id,question_id)).fetchall()
             if len(questions) > 1:
                 raise ValueError("질문이 여러 개입니다. Orca에서 질문별로 답변해 주세요")
             question = questions[0] if questions else None
-            row = db.execute("SELECT state FROM orca_requests WHERE id=?", (key,)).fetchone()
+            row = db.execute("SELECT state,agent,chat_id FROM orca_requests WHERE id=?", (key,)).fetchone()
             if not question or not row or row["state"] not in {"ATTENTION", "RUNNING"}:
                 raise ValueError("답변을 기다리는 질문이 없습니다")
             db.execute("UPDATE orca_questions SET reply_text=?, reply_source=?,state='ANSWERING' WHERE message_id=?",
                 (text,source,question["message_id"]))
+            if select_chat:
+                from app.agent_routing import select
+                select(db,row['chat_id'],row['agent'],key,source)
 
-    def describe(self, key=""):
+    def describe(self, key="", *, chat_id=None, agent=None):
         rows = self.rows()
+        if chat_id is not None:
+            rows = [r for r in rows if r['chat_id']==chat_id]
+        if agent is not None:
+            rows = [r for r in rows if r['agent']==agent]
         if key:
             rows = [r for r in rows if r["id"] == key]
         if not rows:
@@ -120,7 +130,15 @@ class OrcaQueue:
         else:
             cards = []
             for row in rows[-8:]:
-                card = f"{row['project']} · {row['model'] or row['agent']}\n상태: {LABELS.get(row['state'],'확인 필요')}\n"
+                label = LABELS.get(row['state'],'확인 필요')
+                if row['state'] in {'RUNNING','ATTENTION','STARTING'}:
+                    try:
+                        age = (datetime.now(UTC)-datetime.fromisoformat(row['updated_at'])).total_seconds()
+                        if age>90 or age < -5:
+                            label = '현재 상태 미확인 · 마지막 기록: '+label
+                    except (ValueError,TypeError):
+                        label = '현재 상태 미확인 · 마지막 기록: '+label
+                card = f"{project_name(self.config,row['project'])} · {row['model'] or row['agent']}\n상태: {label}\n"
                 card += f"요청: {row['request_text'][:180]}\n마지막 확인: {local_time(row['updated_at'])}\n"
                 if row['error'] or row['summary']:
                     card += (row['error'] or row['summary'])+'\n'
@@ -136,9 +154,16 @@ class OrcaQueue:
                     last_permission = db.execute("SELECT state,expires_at FROM claude_permissions WHERE request_id=? ORDER BY rowid DESC LIMIT 1",(row['id'],)).fetchone()
                 if last_permission and last_permission['state'] in {'DENIED','EXPIRED'}:
                     card += "\n실행 허용이 거절되거나 만료되었습니다. 해당 명령은 재시도하지 않습니다. 작업 종료 여부는 별도 확인이 필요합니다."
+                with self.store.connect() as db:
+                    pending = db.execute("SELECT body,state FROM orca_questions WHERE request_id=? AND state IN ('PENDING','ANSWERING') ORDER BY rowid",(row['id'],)).fetchall()
+                    command = db.execute('SELECT state FROM orca_chat_commands WHERE request_id=? ORDER BY rowid DESC LIMIT 1',(row['id'],)).fetchone()
+                for question in pending:
+                    card += '\n\n'+('답변 전달 중: ' if question['state']=='ANSWERING' else '답변이 필요한 질문: ')+question['body']
+                if command:
+                    card += '\n추가 지시: '+{'QUEUED':'전달 대기','SENDING':'전달 중','SENT':'수신함에 전달 · 반영 여부는 결과로 확인','UNKNOWN':'전달 결과 미확인','REFUSED':'원래 작업자에 전달하지 않음'}[command['state']]
                 cards.append(card)
             stored = '\n\n'.join(cards)
-        if not key and (self.store.db_path.parent / "orca-sessions.json").is_file():
+        if not key and chat_id is None and agent is None and (self.store.db_path.parent / "orca-sessions.json").is_file():
             from app.orca_sessions import describe_sessions
             return describe_sessions(self.store) + "\n\nOrca 발주 기록\n" + stored
         return stored
@@ -170,11 +195,12 @@ class OrcaBridge:
     def call(self, command, *args):
         return self.client.call("orchestration", command, *args)
 
-    def notify(self, row, state, text, db=None):
+    def notify(self, row, state, text, db=None, *, model=False, question_id=None):
         if row["chat_id"] is None:
             return
-        payload = {"chat_id":row["chat_id"],"text":redact_text(
-            f"Orca {row['id']} · {row['project']} / {row.get('model') or row['agent']}\n{text}",3500)}
+        footer = ('질문 번호: '+question_id+'\n' if question_id else '')+'작업 번호: '+row['id']
+        payload = {"chat_id":row["chat_id"],"text":message_card(
+            sender_title(row['agent'],project_name(self.config,row['project']),model=model),text,footer)}
         key = f"orca:{row['id']}:{state}"
         if db is not None:
             db.execute("""INSERT OR IGNORE INTO outbox
@@ -442,6 +468,38 @@ class OrcaBridge:
             self.queue.update(key, state="UNKNOWN", error=type(exc).__name__ + ": 실행 결과 확인 필요. 자동 재실행하지 않습니다.")
             self.notify(row, "UNKNOWN", "실행 결과를 확인 중입니다. 중복 실행하지 않습니다.")
 
+    def deliver_chat(self, workers):
+        with self.queue.store.connect() as db:
+            commands = [dict(r) for r in db.execute("SELECT * FROM orca_chat_commands WHERE state IN ('QUEUED','SENDING','UNKNOWN') AND attempts<3 ORDER BY rowid LIMIT 20")]
+        for command in commands:
+            row = next((r for r in self.queue.rows() if r['id']==command['request_id']),None)
+            matches = [w for w in workers if row and w.get('dispatchId')==command['dispatch_id'] and w.get('taskId')==row['task_id'] and w.get('runId')==row['run_id']]
+            valid = (row and row['agent']=='claude' and row['state'] in {'RUNNING','ATTENTION'} and row['dispatch_id']==command['dispatch_id']
+                     and len(matches)==1 and matches[0].get('projection',{}).get('liveness',{}).get('verdict')=='live'
+                     and matches[0].get('resource',{}).get('ownershipState')=='owned')
+            if not valid:
+                state = 'REFUSED' if command['state']=='QUEUED' else 'UNKNOWN'
+                with self.queue.store.connect() as db:
+                    db.execute('UPDATE orca_chat_commands SET state=?,attempts=3 WHERE id=?',(state,command['id']))
+                if row:
+                    self.notify(row,'chat:'+command['id']+':unconfirmed','원래 작업자의 소유권·실행 상태를 확인하지 못해 추가 지시를 더 보내지 않았습니다. 다른 작업으로 자동 전달하지 않습니다.')
+                continue
+            with self.queue.store.connect() as db:
+                db.execute("UPDATE orca_chat_commands SET state='SENDING',attempts=attempts+1 WHERE id=?",(command['id'],))
+            try:
+                result = self.call('send','--run',row['run_id'],'--from',self.config['coordinator'],
+                    '--to','dispatch:'+command['dispatch_id'],'--type','status','--subject','텔레그램 사용자 추가 지시',
+                    '--body',command['body'],'--retry-request',str(uuid.uuid5(uuid.NAMESPACE_URL,'orca-chat:'+command['id'])))
+                if not (result.get('messageId') or (result.get('message') or {}).get('id')):
+                    raise RuntimeError('Missing native message receipt')
+                with self.queue.store.connect() as db:
+                    db.execute("UPDATE orca_chat_commands SET state='SENT',receipt=? WHERE id=?",(redact_text(json.dumps(result,ensure_ascii=False),6000),command['id']))
+                self.notify(row,'chat:'+command['id']+':sent','추가 지시를 원래 작업자의 수신함에 전달했습니다. 읽고 반영했는지는 결과로 확인합니다.')
+            except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired):
+                with self.queue.store.connect() as db:
+                    db.execute("UPDATE orca_chat_commands SET state='UNKNOWN' WHERE id=?",(command['id'],))
+                self.notify(row,'chat:'+command['id']+':unknown','추가 지시의 전달 결과를 확인하지 못했습니다. 같은 요청 번호로만 확인하며, 다른 작업으로 보내지 않습니다.')
+
     def reconcile(self):
         rows = self.queue.rows()
         with self.queue.store.connect() as db:
@@ -457,6 +515,7 @@ class OrcaBridge:
         run = self.config["run_id"]
         tasks = self.call("task-list", "--run", run, "--brief")["tasks"]
         workers = self.workers()
+        self.deliver_chat(workers)
         for row in rows:
             if row["state"] not in ACTIVE or any(c["state"] != "DONE" for c in Handoff(self.queue).changes(row["id"])):
                 continue
@@ -522,7 +581,7 @@ class OrcaBridge:
                 if row["state"] not in TERMINAL:
                     self.queue.update(row["id"], state="ATTENTION", error=question["body"])
                     self.notify(row, "question:"+msg["id"], question["body"]+
-                        "\n답변: /orca reply "+row["id"]+" 답변 내용")
+                        "\n이 질문에 답장하거나 /orca reply 작업ID 답변 으로 보내 주세요.",model=True,question_id=msg['id'])
                 all_processed = False
                 continue
             if msg.get("type") == "heartbeat" and identity_ok:
@@ -560,7 +619,7 @@ class OrcaBridge:
                 db.execute("UPDATE orca_attempts SET outcome=?,summary=? WHERE dispatch_id=?", (state,summary,row["dispatch_id"]))
             switching = any(c["state"] != "DONE" for c in Handoff(self.queue).changes(row["id"]))
             self.queue.update(row["id"], state=row["state"] if switching else state, summary=summary, error="")
-            self.notify(row, row["dispatch_id"]+":"+state, LABELS[state]+" · "+summary)
+            self.notify(row, row["dispatch_id"]+":"+state, LABELS[state]+" · "+summary,model=True)
             if not switching and (worker.get("terminalState") == "released" or released.get("state") in {"released","already_released"}):
                 self.release_claim(row)
         if delivery.get("deliveryId") and all_processed:

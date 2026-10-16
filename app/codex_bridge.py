@@ -15,7 +15,7 @@ from app.codex_session import CodexSessions, load_config
 from app.config import Settings
 from app.redact import redact, redact_text
 from app.state import StateStore, utc_now
-from app.telegram_copy import approval_details, error_detail, message_card, project_name
+from app.telegram_copy import approval_details, error_detail, message_card, project_name, sender_title
 
 
 LOG = logging.getLogger('codex-bridge')
@@ -70,9 +70,9 @@ class Bridge:
             db.execute('INSERT INTO codex_activity VALUES (?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET epoch=excluded.epoch,turn_id=excluded.turn_id,summary=excluded.summary,observed_at=excluded.observed_at',
                 (session['id'],self.epoch,turn_id,redact_text(summary,400),utc_now()))
 
-    def notify(self, session, key, text, buttons=None, question_id=None):
+    def notify(self, session, key, text, buttons=None, question_id=None, *, model=False):
         footer = ('확인 번호: '+question_id+'\n' if question_id else '')+'대화 번호: '+session['id']
-        payload = {'chat_id':session['chat_id'], 'text':message_card('코덱스 · '+project_name(self.config,session['project']),text,footer)}
+        payload = {'chat_id':session['chat_id'], 'text':message_card(sender_title('codex',project_name(self.config,session['project']),model=model),text,footer)}
         if buttons:
             payload['reply_markup'] = {'inline_keyboard':buttons}
         self.store.queue_outbox(dedupe_key='codex:'+self.epoch+':'+key, chat_id=session['chat_id'], method='sendMessage', payload=payload)
@@ -164,7 +164,7 @@ class Bridge:
                     self.question(s,{'method':ASYNC_QUESTION,'id':'async:'+item['id'],
                         'params':{'threadId':p['threadId'],'turnId':p['turnId'],'itemId':item['id'],'questions':questions}})
                 elif text:
-                    self.notify(s,'message:'+item['id'],text)
+                    self.notify(s,'message:'+item['id'],text,model=True)
         elif method == 'item/started':
             item = p.get('item',{})
             if item.get('type') == 'fileChange':
@@ -233,7 +233,7 @@ class Bridge:
         if inserted.rowcount:
             self.update(session['id'],state='WAITING',turn_id=p['turnId'])
             self.activity(session,'답변 또는 실행 허용 여부를 확인하는 단계입니다.',p['turnId'])
-            self.notify(session,'question:'+key,visible+'\n\n이 확인 요청은 10분 뒤 만료됩니다.',buttons,question_id=key)
+            self.notify(session,'question:'+key,visible+'\n\n이 확인 요청은 10분 뒤 만료됩니다.',buttons,question_id=key,model=method in {'item/tool/requestUserInput',ASYNC_QUESTION})
 
     async def command(self, row):
         with self.store.transaction() as db:

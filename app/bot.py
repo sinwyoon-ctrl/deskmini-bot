@@ -307,6 +307,9 @@ class ChiefBot:
             self._send("텍스트, 사진, 문서(pdf·txt·md·csv·json)만 처리할 수 있습니다.")
             return
         command = text.strip().split(maxsplit=1)[0].split("@", 1)[0].lower()
+        from app.agent_routing import handle_message as agent_message
+        if agent_message(self, message, update_id):
+            return
         from app.codex_session import handle_message as codex_message
         if codex_message(self, message, update_id):
             return
@@ -339,7 +342,7 @@ class ChiefBot:
             visible = re.sub(r"\s*\([A-Z_]+\)", "", visible)
             visible = re.sub(r"·\s*·", "·", visible)
             visible = re.sub(r"(?m)[ ·]+$", "", visible)
-        self._notify(f"orca:telegram:{update_id}:receipt", esc(visible), memory_text=esc(text))
+        self._notify(f"orca:telegram:{update_id}:receipt", esc('[봇 안내]\n'+visible), memory_text=esc(text))
 
     def _orca_natural(self, text: str, update_id: int) -> bool:
         from app.orca_bridge import OrcaQueue, ID_RE, TERMINAL
@@ -477,7 +480,7 @@ class ChiefBot:
                 if len(bits) != 4:
                     raise ValueError("사용법: /orca new 프로젝트 codex|claude|astra|sol 작업 내용")
                 row = queue.submit(f"telegram:{update_id}",bits[1],bits[2],bits[3],self.settings.allowed_chat_id,
-                    imported=bits[0]=="import")
+                    imported=bits[0]=="import",select_chat=bits[0]=='new')
                 reply = f"Orca 접수: {row['id']} · {row['state']} · {row['model'] or row['agent']} / {row['project']}\n"
                 reply += "외부 담당자 종료 미확인 · 문맥만 가져옵니다" if row["imported"] else "실행기가 소유권을 확인한 후 시작합니다"
             elif ID_RE.fullmatch(argument):
@@ -599,7 +602,7 @@ class ChiefBot:
         elif result.action.type != "none":
             self._send("요청을 실행하지 않았어요. 대상 작업이나 요청 내용을 확인해 주세요.")
         else:
-            self._send(esc(redact_text(result.reply, 3_500)), provider=result.provider)
+            self._send(esc('[비서 답변]\n'+redact_text(result.reply, 3_500)), provider=result.provider)
 
     def _record_chat_decision(self, result: ChatResult, decision: Decision | None) -> None:
         self.store.add_event(
