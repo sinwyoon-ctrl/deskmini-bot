@@ -169,6 +169,13 @@ class Scenarios:
         assert 'return len(items)' not in (self.workspace/'totals.py').read_text()
         self.record('natural_code_work',tests='3 passed',original_tests_unchanged=True,independent_checks=3,thread=first['thread_id'])
 
+        commands = len(self.rows('SELECT id FROM codex_commands'))
+        self.send('지금 어디까지 했어?')
+        assert len(self.rows('SELECT id FROM codex_commands'))==commands
+        assert self.session(key)['state']=='IDLE'
+        assert self.rows('SELECT summary FROM codex_activity WHERE session_id=?',key)
+        self.record('status_after_completion_is_read_only',new_commands=0,activity_recorded=True)
+
         before = len(self.events)-1
         update_id = self.send('앞서 README에서 읽은 작업번호만 한 줄로 답해. 도구를 실행하거나 파일을 수정하지 마.')
         followup = await self.done(key,before,'telegram:'+str(update_id))
@@ -197,6 +204,13 @@ class Scenarios:
         q = await self.question(key)
         assert q['method']=='item/tool/requestUserInput'
         q_turn = q['turn_id']
+        commands = len(self.rows('SELECT id FROM codex_commands'))
+        for text in ('지금 뭐 하고 있어?', '진행 상황 알려줘', '어디까지 했어?'):
+            self.send(text,reply=q['id'])
+        assert len(self.rows('SELECT id FROM codex_commands'))==commands
+        assert self.api.pending(key)[0]['id']==q['id']
+        assert self.response_frames[(q['epoch'],q['request_id'])]==0
+        self.record('status_during_decision_is_read_only',new_commands=0,question_still_pending=True,response_frames=0)
         self.press(q['id'],'1',authorized=False)
         assert self.rows('SELECT state FROM codex_questions WHERE id=?',q['id'])[0]['state']=='PENDING'
         self.record('unauthorized_callback',approval_not_consumed=True)
@@ -214,7 +228,7 @@ class Scenarios:
         before = len(self.events)-1
         self.send('blocking request_user_input으로 시험 이름을 alpha 또는 beta 중 고르거나 다른 이름을 입력하도록 물어봐. 파일을 만들지 말고 답을 받은 뒤 그 이름만 답해.')
         q = await self.question(key)
-        self.send('gamma',reply=q['id'])
+        self.send('gamma로 하되, 파일은 만들지 말고 글로만 알려줘.',reply=q['id'])
         freeform = await self.done(key,before)
         assert 'gamma' in freeform['last_text'].lower()
         assert freeform['thread_id']==first['thread_id']
@@ -227,6 +241,12 @@ class Scenarios:
         assert q['method']=='item/commandExecution/requestApproval'
         assert 'approved.txt' in json.loads(q['params']).get('command','')
         assert not (self.workspace/'approved.txt').exists()
+        commands = len(self.rows('SELECT id FROM codex_commands'))
+        self.send('현재 상태는?')
+        assert not (self.workspace/'approved.txt').exists()
+        assert len(self.rows('SELECT id FROM codex_commands'))==commands
+        assert self.api.pending(key)[0]['id']==q['id']
+        self.record('status_during_approval_does_not_approve',question_still_pending=True,file_absent=True,new_commands=0)
         self.press(q['id'],'accept')
         await self.done(key,before)
         assert (self.workspace/'approved.txt').read_text().strip()=='APPROVED_ONCE'
@@ -263,6 +283,11 @@ class Scenarios:
         await self.stop()
         await self.start()
         assert self.session(key)['state']=='UNKNOWN'
+        commands = len(self.rows('SELECT id FROM codex_commands'))
+        self.send('현재 진행 상황 알려줘')
+        assert len(self.rows('SELECT id FROM codex_commands'))==commands
+        assert self.session(key)['state']=='UNKNOWN'
+        self.record('status_after_restart_is_read_only',unknown_state=True,new_commands=0)
         old_count = len(self.rows('SELECT id FROM codex_commands'))
         self.send('끊긴 상태에서 이 메시지를 실행하면 안 돼. 작업번호만 답해.')
         assert len(self.rows('SELECT id FROM codex_commands'))==old_count

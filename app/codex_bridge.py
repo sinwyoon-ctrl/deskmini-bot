@@ -65,6 +65,11 @@ class Bridge:
         with self.store.connect() as db:
             db.execute('INSERT INTO codex_runtime VALUES (1,?,?,?) ON CONFLICT(singleton) DO UPDATE SET epoch=excluded.epoch,state=excluded.state,observed_at=excluded.observed_at', (self.epoch,state,utc_now()))
 
+    def activity(self, session, summary, turn_id=None):
+        with self.store.connect() as db:
+            db.execute('INSERT INTO codex_activity VALUES (?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET epoch=excluded.epoch,turn_id=excluded.turn_id,summary=excluded.summary,observed_at=excluded.observed_at',
+                (session['id'],self.epoch,turn_id,redact_text(summary,400),utc_now()))
+
     def notify(self, session, key, text, buttons=None, question_id=None):
         footer = ('확인 번호: '+question_id+'\n' if question_id else '')+'대화 번호: '+session['id']
         payload = {'chat_id':session['chat_id'], 'text':message_card('코덱스 · '+project_name(self.config,session['project']),text,footer)}
@@ -137,9 +142,17 @@ class Bridge:
                     db.execute("UPDATE codex_questions SET state='CLOSED' WHERE id=?",(question['id'],))
                     db.execute("UPDATE codex_commands SET state='REFUSED',error='A newer turn superseded this question' WHERE source=? AND state='QUEUED'",('answer:'+question['id'],))
             self.update(s['id'],state='RUNNING',turn_id=turn['id'])
+            self.activity(s,'이번 요청의 작업을 시작했습니다.',turn['id'])
             self.notify(s,'started:'+turn['id'],'작업을 시작했습니다.')
         elif method == 'item/completed':
             item = p.get('item',{})
+            kind = item.get('type')
+            if kind == 'commandExecution':
+                code = item.get('exitCode')
+                summary = '명령 처리가 끝났습니다.' if code==0 else '명령이 오류로 끝났습니다.' if isinstance(code,int) else '명령 처리 결과를 받았습니다.'
+                self.activity(s,summary+('\n명령: '+redact_text(item['command'],180) if isinstance(item.get('command'),str) else ''),p.get('turnId'))
+            elif kind in {'fileChange','mcpToolCall','webSearch'}:
+                self.activity(s,{'fileChange':'파일 변경 단계의 처리 결과를 받았습니다.', 'mcpToolCall':'연결된 도구의 처리 결과를 받았습니다.', 'webSearch':'자료 검색 단계의 처리 결과를 받았습니다.'}[kind],p.get('turnId'))
             if item.get('type') == 'agentMessage':
                 text = redact_text(item.get('text',''),3200)
                 if text:
@@ -157,6 +170,9 @@ class Bridge:
             if item.get('type') == 'fileChange':
                 self.file_changes[item.get('id')] = redact(item.get('changes',[]))
             label = {'commandExecution':'실행할 명령을 준비하고 있습니다.', 'fileChange':'파일 변경 내용을 준비하고 있습니다.', 'mcpToolCall':'연결된 도구에 작업을 요청하고 있습니다.', 'webSearch':'필요한 자료를 찾아보고 있습니다.'}.get(item.get('type'))
+            if label:
+                detail = '\n명령: '+redact_text(item['command'],180) if isinstance(item.get('command'),str) else ''
+                self.activity(s,label+detail,p.get('turnId'))
             if label and time.monotonic()-self.last_progress.get(s['id'],0)>15:
                 self.last_progress[s['id']] = time.monotonic()
                 self.notify(s,'progress:'+str(item.get('id')),label)
@@ -170,6 +186,8 @@ class Bridge:
             text = {'completed':'이번 요청에 대한 응답을 마쳤습니다.\n이어서 할 일이 있으면 이 대화에 보내 주세요.', 'interrupted':'이번 요청의 작업을 중단했습니다.\n이미 변경된 파일은 자동으로 되돌리지 않습니다.'}.get(status,'오류로 이번 요청을 끝내지 못했습니다.\n/codex status 로 상태를 확인해 주세요.\n\n오류 내용(참고)\n'+redact_text(error_detail(turn.get('error')),700))
             if status == 'completed' and waiting:
                 text = '질문 답변을 기다립니다. 질문의 버튼을 누르거나 질문 메시지에 답장해 주세요.'
+            self.activity(s,'질문에 대한 답변을 기다리고 있습니다.' if waiting else {
+                'completed':'이번 요청에 대한 응답을 마쳤습니다.', 'interrupted':'이번 요청이 중단되었습니다.'}.get(status,'이번 요청에서 오류가 보고되었습니다.'),turn['id'])
             self.notify(s,'completed:'+turn['id'],text)
 
     def question(self, session, data):
@@ -214,6 +232,7 @@ class Bridge:
                 (key,session['id'],self.epoch,json.dumps(data['id']),p['turnId'],method,json.dumps(safe), 'PENDING',None,(datetime.now(UTC)+timedelta(minutes=10)).isoformat(timespec='seconds')))
         if inserted.rowcount:
             self.update(session['id'],state='WAITING',turn_id=p['turnId'])
+            self.activity(session,'답변 또는 실행 허용 여부를 확인하는 단계입니다.',p['turnId'])
             self.notify(session,'question:'+key,visible+'\n\n이 확인 요청은 10분 뒤 만료됩니다.',buttons,question_id=key)
 
     async def command(self, row):
@@ -249,6 +268,7 @@ class Bridge:
                 if thread.get('cwd') != session['cwd'] or any(t.get('status') == 'inProgress' for t in thread.get('turns',[])):
                     raise RpcError('복구한 대화의 작업공간 또는 실행 상태를 확인해 주세요')
                 self.update(session['id'],epoch=self.epoch,state='IDLE',turn_id=None)
+                self.activity(session,'이전 대화 연결을 복구했습니다. 다음 요청을 기다립니다.')
                 self.notify(session,'recovered:'+row['id'],'이전 대화 연결을 복구했습니다. 다음 지시를 보내 주세요.')
             else:
                 if session['epoch'] != self.epoch or session['state'] not in {'IDLE','RUNNING','WAITING'}:

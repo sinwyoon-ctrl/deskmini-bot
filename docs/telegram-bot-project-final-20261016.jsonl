@@ -1,0 +1,2 @@
+{"case": "actual_bot_project_read", "status": "PASS", "at": "2026-10-16T05:41:13+00:00", "actual_codex": true, "registered_project": "bot", "expected_readme_heading": true, "readme_hash_unchanged": true, "git_status_unchanged": true, "previous_focus_switched": true}
+{"case": "actual_bot_project_status", "status": "PASS", "at": "2026-10-16T05:41:13+00:00", "new_commands": 0, "same_thread": true}

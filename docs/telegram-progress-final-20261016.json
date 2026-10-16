@@ -1,0 +1,139 @@
+{
+  "status": "PASS",
+  "actual_codex": true,
+  "telegram_transport": "FakeTelegram",
+  "production_services_changed": false,
+  "production_db_changed": false,
+  "cases": [
+    {
+      "case": "natural_code_work",
+      "status": "PASS",
+      "at": "2026-10-16T05:41:25+00:00",
+      "tests": "3 passed",
+      "original_tests_unchanged": true,
+      "independent_checks": 3,
+      "thread": "01a1433a-6e4f-71f2-9c81-bdfbe5429a27"
+    },
+    {
+      "case": "status_after_completion_is_read_only",
+      "status": "PASS",
+      "at": "2026-10-16T05:41:25+00:00",
+      "new_commands": 0,
+      "activity_recorded": true
+    },
+    {
+      "case": "same_thread_followup",
+      "status": "PASS",
+      "at": "2026-10-16T05:41:27+00:00",
+      "thread_unchanged": true
+    },
+    {
+      "case": "duplicate_telegram_update",
+      "status": "PASS",
+      "at": "2026-10-16T05:41:27+00:00",
+      "extra_commands": 0
+    },
+    {
+      "case": "bot_object_restart",
+      "status": "PASS",
+      "at": "2026-10-16T05:41:29+00:00",
+      "persistent_focus": true,
+      "context_preserved": true
+    },
+    {
+      "case": "status_during_decision_is_read_only",
+      "status": "PASS",
+      "at": "2026-10-16T05:41:33+00:00",
+      "new_commands": 0,
+      "question_still_pending": true,
+      "response_frames": 0
+    },
+    {
+      "case": "unauthorized_callback",
+      "status": "PASS",
+      "at": "2026-10-16T05:41:33+00:00",
+      "approval_not_consumed": true
+    },
+    {
+      "case": "choice_and_duplicate_click",
+      "status": "PASS",
+      "at": "2026-10-16T05:41:36+00:00",
+      "question_turn": "01a1433a-ce2c-7da0-a0a0-1e397e267459",
+      "same_turn_completed": true,
+      "responses_measured": 1
+    },
+    {
+      "case": "freeform_reply_to_question",
+      "status": "PASS",
+      "at": "2026-10-16T05:41:44+00:00",
+      "answer": "gamma",
+      "same_thread": true
+    },
+    {
+      "case": "status_during_approval_does_not_approve",
+      "status": "PASS",
+      "at": "2026-10-16T05:41:49+00:00",
+      "question_still_pending": true,
+      "file_absent": true,
+      "new_commands": 0
+    },
+    {
+      "case": "command_approval",
+      "status": "PASS",
+      "at": "2026-10-16T05:41:52+00:00",
+      "absent_before_approval": true,
+      "present_after_approval": true
+    },
+    {
+      "case": "command_denial",
+      "status": "PASS",
+      "at": "2026-10-16T05:41:57+00:00",
+      "denied_file_absent": true
+    },
+    {
+      "case": "two_sessions_and_focus",
+      "status": "PASS",
+      "at": "2026-10-16T05:42:01+00:00",
+      "queued_message_target_preserved": true,
+      "separate_threads": true
+    },
+    {
+      "case": "status_after_restart_is_read_only",
+      "status": "PASS",
+      "at": "2026-10-16T05:42:05+00:00",
+      "unknown_state": true,
+      "new_commands": 0
+    },
+    {
+      "case": "backend_restart_guard",
+      "status": "PASS",
+      "at": "2026-10-16T05:42:05+00:00",
+      "unknown_state": true,
+      "unrequested_execution": 0
+    },
+    {
+      "case": "stale_click_after_restart",
+      "status": "PASS",
+      "at": "2026-10-16T05:42:05+00:00",
+      "not_reused": true
+    },
+    {
+      "case": "explicit_recovery",
+      "status": "PASS",
+      "at": "2026-10-16T05:42:12+00:00",
+      "same_thread": true,
+      "context_preserved": true,
+      "files_unchanged": true,
+      "approved_file_not_rewritten": true,
+      "previous_command_records_unchanged": true
+    },
+    {
+      "case": "outbox_delivery_simulation",
+      "status": "PASS",
+      "at": "2026-10-16T05:42:12+00:00",
+      "messages": 71,
+      "telegram_network_calls": 0
+    }
+  ],
+  "error": null
+}

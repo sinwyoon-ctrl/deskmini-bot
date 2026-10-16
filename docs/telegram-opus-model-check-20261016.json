@@ -1,0 +1,10 @@
+{
+  "exit_code": 0,
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "model_names": [
+    "claude-opus-5-5"
+  ],
+  "probe_acknowledged": true
+}

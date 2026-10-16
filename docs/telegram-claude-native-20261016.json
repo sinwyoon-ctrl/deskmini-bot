@@ -1,0 +1,28 @@
+{
+  "status": "PASS",
+  "telegram_transport": "FakeTelegram",
+  "actual_claude": true,
+  "production_db_changed": false,
+  "production_services_changed": false,
+  "native_question_received": true,
+  "file_absent_before_answer": true,
+  "answer_applied": true,
+  "freeform_outside_options": true,
+  "native_succeeded": true,
+  "requested_model": "claude-opus-5-5",
+  "launch": {
+    "requested": {
+      "agent": "claude",
+      "model": "claude-opus-5-5",
+      "effort": null
+    },
+    "effective": {
+      "agent": "claude",
+      "model": "claude-opus-5-5",
+      "effort": null
+    }
+  },
+  "telegram_network_calls": 0,
+  "worker_terminal_released": true,
+  "coordinator_closed": true
+}

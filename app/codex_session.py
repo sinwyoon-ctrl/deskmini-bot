@@ -11,6 +11,7 @@ from pathlib import Path
 from app.redact import redact_text
 from app.state import ConflictError, utc_now
 from app.telegram_copy import local_time, project_name, state_label
+from app.codex_status import status_query
 
 
 def load_config(root):
@@ -156,19 +157,42 @@ class CodexSessions:
                 raise ConflictError('이 질문 유형은 Orca에서 확인해 주세요')
             db.execute("UPDATE codex_questions SET state='ANSWERING',response=? WHERE id=? AND state='PENDING'", (json.dumps(result), key))
 
-    def describe(self, chat_id):
+    def describe(self, chat_id, key=None):
         rows = self.rows(chat_id)
         focus = self.focused(chat_id)
+        if key:
+            rows = [row for row in rows if row['id']==key]
+            if not rows:
+                raise ConflictError('이 대화에서 해당 작업을 찾지 못했습니다.')
+        rows.sort(key=lambda row: row['id'] != (focus or {}).get('id'))
+        epoch = None
         try:
-            self.ready()
+            epoch = self.ready()
             status = '코덱스에 연결되어 있습니다.'
         except ConflictError as exc:
-            status = str(exc)
+            status = '현재 연결 상태를 확인하지 못했습니다.\n아래 내용은 마지막으로 받은 기록입니다.'
         cards = []
         for row in rows[:5]:
             selected = focus and focus['id'] == row['id']
             card = ('지금 대화하는 작업 · ' if selected else '다른 작업 · ') + project_name(self.config,row['project'])
-            card += '\n상태: '+state_label(row['state'])+'\n마지막 확인: '+local_time(row['observed_at'])
+            live = epoch and row['epoch']==epoch
+            label = state_label(row['state']) if live else '현재 상태 미확인 · 마지막 기록: '+state_label(row['state'])
+            with self.store.connect() as db:
+                activity = db.execute('SELECT * FROM codex_activity WHERE session_id=?',(row['id'],)).fetchone()
+                questions = db.execute("SELECT * FROM codex_questions WHERE session_id=? AND state IN ('PENDING','ANSWERING','SENDING') ORDER BY rowid",(row['id'],)).fetchall()
+            if live and row['state']=='WAITING' and questions and all(q['state']!='PENDING' for q in questions):
+                label = '받은 답변을 전달하는 중'
+            card += '\n상태: '+label+'\n마지막 확인: '+local_time(row['observed_at'])
+            if activity:
+                card += '\n\n마지막으로 확인한 동작\n'+activity['summary']+'\n동작 확인: '+local_time(activity['observed_at'])
+            pending = [q for q in questions if q['state']=='PENDING' and q['epoch']==epoch and q['expires_at']>utc_now()]
+            if pending:
+                params = json.loads(pending[0]['params'])
+                if pending[0]['method'] in {'item/tool/requestUserInput','agentMessage/questions'}:
+                    prompt = ' / '.join(q.get('question','') for q in params.get('questions',[]))
+                else:
+                    prompt = '실행 또는 권한 허용 여부를 기다리고 있습니다.'
+                card += '\n\n확인이 필요한 내용\n'+redact_text(prompt,350)+'\n원래 질문에 답장하거나 해당 메시지의 버튼을 눌러 주세요.'
             if row['last_text']:
                 card += '\n\n마지막 응답\n'+row['last_text'][:600]
             if row['state'] == 'UNKNOWN' and row['thread_id']:
@@ -194,12 +218,16 @@ def handle_message(bot, message, update_id):
     if natural and re.search(r'남겨|할\s*일|todo',text,re.I):
         natural = None
     focused = sessions.focused(chat_id)
+    requested_projects = [name for name,p in sessions.config.get('projects',{}).items()
+        if natural and any(re.match(re.escape(alias)+r'(?:\s|에서|의|$)',natural[1]) for alias in [name]+p.get('aliases',[]))]
     reply_text = (message.get('reply_to_message') or {}).get('text','')
     anchors = re.findall(r'(?m)^(?:확인 요청 |확인 번호: )(q-[a-f0-9]{10})(?:\s|$)',reply_text)
     anchored = anchors[-1] if anchors else None
+    inquiry = status_query(text)
+    codex_inquiry = inquiry and re.match(r'^코덱스',text)
     if not control and text.startswith('/'):
         return False
-    if not control and not focused and not natural and not anchored:
+    if not control and not focused and not natural and not anchored and not codex_inquiry:
         return False
     bot.store.add_chat_message(chat_id, 'user', text)
     try:
@@ -227,11 +255,24 @@ def handle_message(bot, message, update_id):
                 reply = '선택한 Codex 작업의 중단을 접수했습니다.'
             else:
                 reply = '사용법: /codex chat · /codex new 프로젝트 지시 · /codex use 작업ID · /codex answer 질문ID 답변 · /codex stop'
+        elif inquiry:
+            key = None
+            if anchored:
+                with bot.store.connect() as db:
+                    question = db.execute('SELECT q.session_id FROM codex_questions q JOIN codex_sessions s ON s.id=q.session_id WHERE q.id=? AND s.chat_id=?',(anchored,chat_id)).fetchone()
+                if not question:
+                    raise ConflictError('답장한 질문의 작업을 이 대화에서 찾지 못했습니다.')
+                key = question['session_id']
+            elif focused:
+                key = focused['id']
+            reply = sessions.describe(chat_id,key)
+            if inquiry=='mixed':
+                reply = '이번 메시지는 진행 상황 조회만 처리했습니다. 함께 적은 답변이나 변경 지시는 별도 메시지로 보내 주세요.\n\n'+reply
         elif anchored:
             sessions.answer(chat_id, anchored, text)
             reply = '답변을 받았습니다. 질문한 작업의 코덱스에 전달하겠습니다.'
-        elif not focused:
-            projects = [name for name,p in sessions.config.get('projects',{}).items() if any(alias in text for alias in [name]+p.get('aliases',[]))]
+        elif not focused or (requested_projects and (len(requested_projects)!=1 or requested_projects[0]!=focused['project'])):
+            projects = requested_projects if focused else [name for name,p in sessions.config.get('projects',{}).items() if any(alias in text for alias in [name]+p.get('aliases',[]))]
             if len(projects) != 1:
                 reply = '어느 프로젝트에서 작업할까요?\n지금 연결할 수 있는 곳: '+', '.join(project_name(sessions.config,k) for k in sessions.config.get('projects',{}))+'\n예: 코덱스로 연결시험 README를 읽어줘'
             else:

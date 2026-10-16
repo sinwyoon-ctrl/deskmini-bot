@@ -1,0 +1,27 @@
+{
+  "claude_version": "2.1.292 (Claude Code)",
+  "claude_auth": {
+    "probe_ok": true,
+    "logged_in": true,
+    "auth_method": "claude.ai"
+  },
+  "run": {
+    "ok": true,
+    "error_code": null,
+    "run_status": null,
+    "run_fields": [
+      "id",
+      "objective",
+      "coordinator_handle",
+      "consumer_generation",
+      "legacy",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "workers": {
+    "ok": true,
+    "error_code": null,
+    "count": 2
+  }
+}

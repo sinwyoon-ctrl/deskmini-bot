@@ -266,3 +266,7 @@ CREATE TABLE IF NOT EXISTS codex_runtime (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL,
  state TEXT NOT NULL, observed_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS codex_activity (
+ session_id TEXT PRIMARY KEY REFERENCES codex_sessions(id), epoch TEXT NOT NULL,
+ turn_id TEXT, summary TEXT NOT NULL, observed_at TEXT NOT NULL
+);
