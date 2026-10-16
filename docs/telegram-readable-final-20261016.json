@@ -1,0 +1,109 @@
+{
+  "status": "PASS",
+  "actual_codex": true,
+  "telegram_transport": "FakeTelegram",
+  "production_services_changed": false,
+  "production_db_changed": false,
+  "cases": [
+    {
+      "case": "natural_code_work",
+      "status": "PASS",
+      "at": "2026-10-16T05:10:12+00:00",
+      "tests": "3 passed",
+      "original_tests_unchanged": true,
+      "independent_checks": 3,
+      "thread": "01a1431d-f153-7d92-a697-a9187f2a32bf"
+    },
+    {
+      "case": "same_thread_followup",
+      "status": "PASS",
+      "at": "2026-10-16T05:10:14+00:00",
+      "thread_unchanged": true
+    },
+    {
+      "case": "duplicate_telegram_update",
+      "status": "PASS",
+      "at": "2026-10-16T05:10:14+00:00",
+      "extra_commands": 0
+    },
+    {
+      "case": "bot_object_restart",
+      "status": "PASS",
+      "at": "2026-10-16T05:10:16+00:00",
+      "persistent_focus": true,
+      "context_preserved": true
+    },
+    {
+      "case": "unauthorized_callback",
+      "status": "PASS",
+      "at": "2026-10-16T05:10:19+00:00",
+      "approval_not_consumed": true
+    },
+    {
+      "case": "choice_and_duplicate_click",
+      "status": "PASS",
+      "at": "2026-10-16T05:10:22+00:00",
+      "question_turn": "01a1431e-3984-7311-b5b7-7fc4aaaf2766",
+      "same_turn_completed": true,
+      "responses_measured": 1
+    },
+    {
+      "case": "freeform_reply_to_question",
+      "status": "PASS",
+      "at": "2026-10-16T05:10:29+00:00",
+      "answer": "gamma",
+      "same_thread": true
+    },
+    {
+      "case": "command_approval",
+      "status": "PASS",
+      "at": "2026-10-16T05:10:37+00:00",
+      "absent_before_approval": true,
+      "present_after_approval": true
+    },
+    {
+      "case": "command_denial",
+      "status": "PASS",
+      "at": "2026-10-16T05:10:45+00:00",
+      "denied_file_absent": true
+    },
+    {
+      "case": "two_sessions_and_focus",
+      "status": "PASS",
+      "at": "2026-10-16T05:10:48+00:00",
+      "queued_message_target_preserved": true,
+      "separate_threads": true
+    },
+    {
+      "case": "backend_restart_guard",
+      "status": "PASS",
+      "at": "2026-10-16T05:10:52+00:00",
+      "unknown_state": true,
+      "unrequested_execution": 0
+    },
+    {
+      "case": "stale_click_after_restart",
+      "status": "PASS",
+      "at": "2026-10-16T05:10:52+00:00",
+      "not_reused": true
+    },
+    {
+      "case": "explicit_recovery",
+      "status": "PASS",
+      "at": "2026-10-16T05:10:57+00:00",
+      "same_thread": true,
+      "context_preserved": true,
+      "files_unchanged": true,
+      "approved_file_not_rewritten": true,
+      "previous_command_records_unchanged": true
+    },
+    {
+      "case": "outbox_delivery_simulation",
+      "status": "PASS",
+      "at": "2026-10-16T05:10:57+00:00",
+      "messages": 65,
+      "telegram_network_calls": 0
+    }
+  ],
+  "error": null
+}

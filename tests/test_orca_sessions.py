@@ -58,7 +58,7 @@ class SessionTests(unittest.TestCase):
         self.assertIn('mobile-created', text)
         self.assertIn('API 40/40', text)
         self.assertIn('다음 지시 대기', text)
-        self.assertIn('프로젝트 전체 완료를 뜻하지', text)
+        self.assertIn('프로젝트 전체의 완료 여부는 별도 확인', text)
         self.assertEqual(self.cache.stat().st_mode & 0o777, 0o600)
 
     def test_failure_replaces_previous_live_success_with_explicit_unknown(self):
@@ -85,7 +85,7 @@ class SessionTests(unittest.TestCase):
         queue = OrcaQueue(self.store, self.config)
         self.assertEqual(queue.describe(), 'Orca 등록 작업이 없습니다.')
         self.cache.write_text('{broken')
-        self.assertIn('미확인', queue.describe())
+        self.assertIn('현재 작업 상태를 확인하지 못했습니다', queue.describe())
         self.assertEqual(read_sessions(self.store)['status'], 'unavailable')
 
     def test_lookup_is_read_only_and_returns_live_mobile_session_with_source_age(self):
@@ -107,7 +107,7 @@ class SessionTests(unittest.TestCase):
     def test_unknown_or_nonlive_session_is_not_called_finished(self):
         capture_sessions(self.store, self.config, Native(result('brand_new_state', 'unverifiable')))
         self.assertIn('상태 미확인', describe_sessions(self.store))
-        self.assertIn('생존 미확인', describe_sessions(self.store))
+        self.assertIn('연결 유지 여부 확인 필요', describe_sessions(self.store))
 
     def test_partial_and_empty_live_result_are_distinct(self):
         native = Native(result(truncated=True))

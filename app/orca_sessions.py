@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.redact import redact, redact_text
+from app.telegram_copy import local_time
 
 CACHE_NAME = 'orca-sessions.json'
 MAX_AGE_SECONDS = 120
@@ -104,12 +105,12 @@ def session_summary(store):
 def describe_sessions(store):
     data = read_sessions(store)
     if data['status'] not in {'ok', 'partial'}:
-        return '실제 Orca 세션: 미확인 (' + data['status'] + ')'
-    lines = ['실제 Orca 세션 · ' + data['observed_at']]
+        return 'Orca의 현재 작업 상태를 확인하지 못했습니다.\n최근 정보가 없어 작업 중인지 단정할 수 없습니다.'
+    lines = ['Orca에서 확인한 작업', '마지막 확인: ' + local_time(data['observed_at'])]
     for item in data['items'][:6]:
         label = STATE_LABELS.get(item['state'], '상태 미확인')
         if item['terminal_verdict'] != 'live':
-            label = '세션 생존 미확인 · 마지막 응답 상태: ' + label
+            label = '연결 유지 여부 확인 필요 · 마지막 기록: ' + label
         lines.append(f"• {item['repo']} / {item['workspace']} · {item['agent']} · {label}")
         if item['last_response']:
             lines.append('  마지막 응답: ' + redact_text(' '.join(item['last_response'].split()), 240))
@@ -117,5 +118,5 @@ def describe_sessions(store):
         lines.append('• 관측된 에이전트 세션 없음')
     if data['status'] == 'partial' or len(data['items']) > 6:
         lines.append('• 일부 호스트 또는 세션은 생략됨')
-    lines.append('응답 완료는 프로젝트 전체 완료를 뜻하지 않습니다.')
+    lines.append('작업자의 마지막 응답 기준입니다. 프로젝트 전체의 완료 여부는 별도 확인이 필요합니다.')
     return '\n'.join(lines)

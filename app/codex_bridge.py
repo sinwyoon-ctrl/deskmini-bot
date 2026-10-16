@@ -15,6 +15,7 @@ from app.codex_session import CodexSessions, load_config
 from app.config import Settings
 from app.redact import redact, redact_text
 from app.state import StateStore, utc_now
+from app.telegram_copy import approval_details, error_detail, message_card, project_name
 
 
 LOG = logging.getLogger('codex-bridge')
@@ -25,6 +26,12 @@ QUESTION_INSTRUCTIONS = ('\nUse the blocking request_user_input tool when a user
     'Do not use request_user_input_async for a decision that must stop the work. '
     'If a question tool fails, ask in plain text and stop; never claim buttons were sent. '
     'Do not ask for secrets over Telegram.')
+MESSAGE_INSTRUCTIONS = ('\nWrite user-facing replies in clear, natural Korean for a phone screen. '
+    'Lead with the result or current situation, then briefly say what the user needs to do, if anything. '
+    'Use short paragraphs and simple lists; avoid Markdown tables and unnecessary headings, state codes, IDs, or protocol terminology. '
+    'Explain unfamiliar technical terms when needed; preserve exact commands, filenames, error details, and approval scope. '
+    'Do not claim a task succeeded merely because a tool finished or the response ended. '
+    'When reporting a problem, explain what happened and the next practical step; do not invent a cause. ')
 
 
 def server_argv(cli, socket_path):
@@ -58,8 +65,9 @@ class Bridge:
         with self.store.connect() as db:
             db.execute('INSERT INTO codex_runtime VALUES (1,?,?,?) ON CONFLICT(singleton) DO UPDATE SET epoch=excluded.epoch,state=excluded.state,observed_at=excluded.observed_at', (self.epoch,state,utc_now()))
 
-    def notify(self, session, key, text, buttons=None):
-        payload = {'chat_id':session['chat_id'], 'text':redact_text('Codex '+session['id']+' / '+session['project']+'\n'+text, 3500)}
+    def notify(self, session, key, text, buttons=None, question_id=None):
+        footer = ('확인 번호: '+question_id+'\n' if question_id else '')+'대화 번호: '+session['id']
+        payload = {'chat_id':session['chat_id'], 'text':message_card('코덱스 · '+project_name(self.config,session['project']),text,footer)}
         if buttons:
             payload['reply_markup'] = {'inline_keyboard':buttons}
         self.store.queue_outbox(dedupe_key='codex:'+self.epoch+':'+key, chat_id=session['chat_id'], method='sendMessage', payload=payload)
@@ -115,7 +123,7 @@ class Bridge:
                 rows = db.execute('SELECT id FROM codex_questions WHERE epoch=? AND request_id=? AND state IN (\'PENDING\',\'ANSWERING\',\'SENDING\')', (self.epoch,json.dumps(p.get('requestId')))).fetchall()
                 db.execute("UPDATE codex_questions SET state='RESOLVED' WHERE epoch=? AND request_id=? AND state IN ('PENDING','ANSWERING','SENDING')", (self.epoch,json.dumps(p.get('requestId'))))
             for q in rows:
-                self.notify(s,'resolved:'+q['id'],'확인 요청 '+q['id']+'이 처리되거나 종료되었습니다. 실행 결과는 별도로 알려드립니다.')
+                self.notify(s,'resolved:'+q['id'],'확인 요청이 처리되었거나 종료되었습니다.\n이 알림은 실행 완료를 뜻하지 않습니다. 결과가 나오면 알려드리겠습니다.')
             with self.store.connect() as db:
                 db.execute("UPDATE codex_sessions SET state='RUNNING',observed_at=? WHERE id=? AND state='WAITING' AND turn_id=? AND NOT EXISTS (SELECT 1 FROM codex_questions WHERE session_id=? AND state IN ('PENDING','ANSWERING','SENDING'))", (utc_now(),s['id'],s['turn_id'],s['id']))
         elif method == 'turn/started':
@@ -148,7 +156,7 @@ class Bridge:
             item = p.get('item',{})
             if item.get('type') == 'fileChange':
                 self.file_changes[item.get('id')] = redact(item.get('changes',[]))
-            label = {'commandExecution':'명령 실행 중', 'fileChange':'파일 수정 중', 'mcpToolCall':'도구 실행 중', 'webSearch':'자료 확인 중'}.get(item.get('type'))
+            label = {'commandExecution':'실행할 명령을 준비하고 있습니다.', 'fileChange':'파일 변경 내용을 준비하고 있습니다.', 'mcpToolCall':'연결된 도구에 작업을 요청하고 있습니다.', 'webSearch':'필요한 자료를 찾아보고 있습니다.'}.get(item.get('type'))
             if label and time.monotonic()-self.last_progress.get(s['id'],0)>15:
                 self.last_progress[s['id']] = time.monotonic()
                 self.notify(s,'progress:'+str(item.get('id')),label)
@@ -159,7 +167,7 @@ class Bridge:
                 db.execute("UPDATE codex_questions SET state='CLOSED' WHERE session_id=? AND turn_id=? AND state IN ('PENDING','ANSWERING','SENDING') AND (method!=? OR ?!='completed')", (s['id'],turn['id'],ASYNC_QUESTION,status))
                 waiting = db.execute("SELECT 1 FROM codex_questions WHERE session_id=? AND method=? AND state IN ('PENDING','ANSWERING','SENDING')",(s['id'],ASYNC_QUESTION)).fetchone()
             self.update(s['id'],state=('WAITING' if waiting else 'IDLE') if status in {'completed','interrupted'} else 'FAILED',turn_id=None)
-            text = {'completed':'이번 요청 처리가 끝났습니다. 다음 지시도 같은 대화로 보내 주세요.', 'interrupted':'이번 요청이 중단되었습니다.'}.get(status,'이번 요청이 실패했습니다. '+redact_text(str(turn.get('error') or ''),700))
+            text = {'completed':'이번 요청에 대한 응답을 마쳤습니다.\n이어서 할 일이 있으면 이 대화에 보내 주세요.', 'interrupted':'이번 요청의 작업을 중단했습니다.\n이미 변경된 파일은 자동으로 되돌리지 않습니다.'}.get(status,'오류로 이번 요청을 끝내지 못했습니다.\n/codex status 로 상태를 확인해 주세요.\n\n오류 내용(참고)\n'+redact_text(error_detail(turn.get('error')),700))
             if status == 'completed' and waiting:
                 text = '질문 답변을 기다립니다. 질문의 버튼을 누르거나 질문 메시지에 답장해 주세요.'
             self.notify(s,'completed:'+turn['id'],text)
@@ -176,21 +184,29 @@ class Bridge:
             visible = p.get('reason') or ''
         buttons = []
         if method in {'item/tool/requestUserInput', ASYNC_QUESTION} and not secret:
-            visible = '\n\n'.join(q['question']+'\n'+'\n'.join(str(i+1)+'. '+o['label'] for i,o in enumerate(q.get('options') or [])) for q in safe['questions'])
+            multiple = len(safe['questions']) > 1
+            visible = ('선택한 내용을 알려 주세요.\n\n' if method == ASYNC_QUESTION else '작업을 이어가려면 답변이 필요합니다.\n\n')+'\n\n'.join(
+                (str(n+1)+'. ' if multiple else '')+q['question']+'\n'+'\n'.join(
+                    ('• ' if multiple else str(i+1)+'. ')+o['label']+('\n   '+o['description'] if o.get('description') else '')
+                    for i,o in enumerate(q.get('options') or [])) for n,q in enumerate(safe['questions']))
             if len(safe['questions']) == 1:
                 buttons = [[{'text':o['label'][:60],'callback_data':f'cx:{key}:{i+1}'}] for i,o in enumerate(safe['questions'][0].get('options') or [])][:8]
-            visible += '\n답변: /codex answer '+key+' 답변'
+            visible += ('\n\n이 메시지에 답장해 질문 번호와 답을 한 줄씩 적어 주세요.\n예: 1. 첫 번째 답\n2. 두 번째 답' if multiple else '\n\n아래 버튼을 누르거나 이 메시지에 답장해 주세요.' if buttons else '\n\n이 메시지에 답장을 보내 주세요.')
         elif method in {'item/commandExecution/requestApproval','item/fileChange/requestApproval','item/permissions/requestApproval'}:
             detail_fields = {k:safe[k] for k in ('command','cwd','additionalPermissions','networkApprovalContext','grantRoot','permissions','reason') if safe.get(k) is not None}
             if method == 'item/fileChange/requestApproval':
                 detail_fields['changes'] = self.file_changes.get(p.get('itemId'))
-            detail = json.dumps(detail_fields,ensure_ascii=False,indent=2)
+            detail = approval_details(detail_fields)
             incomplete = len(detail)>2500 or (method == 'item/fileChange/requestApproval' and not detail_fields['changes']) or (method == 'item/commandExecution/requestApproval' and not any(safe.get(k) for k in ('command','networkApprovalContext')))
             if incomplete:
                 safe['_telegram_approval_unavailable'] = True
-            visible = '승인이 필요합니다.\n'+detail[:2500]+ ('\n승인 범위 전체를 표시하지 못했습니다. Orca에서 상세 내용을 확인해 주세요.' if incomplete else '')
+            visible = '실행 전에 확인이 필요합니다.\n아래 내용을 확인한 뒤 허용 여부를 골라 주세요.\n\n'+detail[:2500]+ ('\n\n전체 실행 범위를 표시하지 못해 승인 버튼을 숨겼습니다. Orca에서 상세 내용을 확인해 주세요.' if incomplete else '\n\n허용하면 아래 범위의 실행을 진행합니다.')
             decisions = safe.get('availableDecisions') or ['accept','decline']
-            buttons = [[{'text':label,'callback_data':f'cx:{key}:{value}'} for label,value in [('이번 요청 승인','accept'),('거절','decline'),('거절하고 중단','cancel')] if value in decisions and (value != 'accept' or not incomplete)]]
+            allow_label = '이번만 허용'
+            if method == 'item/permissions/requestApproval':
+                allow_label = '이번 작업 동안 허용'
+                visible += '\n허용한 권한은 이번 요청의 작업이 끝날 때까지 적용됩니다. 같은 요청 안에서 여러 번 사용될 수 있습니다.'
+            buttons = [[{'text':label,'callback_data':f'cx:{key}:{value}'} for label,value in [(allow_label,'accept'),('허용 안 함','decline'),('거절하고 중단','cancel')] if value in decisions and (value != 'accept' or not incomplete)]]
             if not buttons[0]:
                 buttons = []
         with self.store.transaction() as db:
@@ -198,7 +214,7 @@ class Bridge:
                 (key,session['id'],self.epoch,json.dumps(data['id']),p['turnId'],method,json.dumps(safe), 'PENDING',None,(datetime.now(UTC)+timedelta(minutes=10)).isoformat(timespec='seconds')))
         if inserted.rowcount:
             self.update(session['id'],state='WAITING',turn_id=p['turnId'])
-            self.notify(session,'question:'+key,'확인 요청 '+key+'\n'+visible,buttons)
+            self.notify(session,'question:'+key,visible+'\n\n이 확인 요청은 10분 뒤 만료됩니다.',buttons,question_id=key)
 
     async def command(self, row):
         with self.store.transaction() as db:
@@ -216,16 +232,19 @@ class Bridge:
                 if session['state'] != 'CREATING' or session['thread_id']:
                     raise RpcError('기존 작업을 중복 생성하지 않습니다')
                 result = await self.rpc('thread/start',{'cwd':session['cwd'],'approvalPolicy':'on-request','approvalsReviewer':'user',
-                    'sandbox':'workspace-write','developerInstructions':project.get('scope','')+QUESTION_INSTRUCTIONS,
+                    'sandbox':'workspace-write','developerInstructions':project.get('scope','')+QUESTION_INSTRUCTIONS+MESSAGE_INSTRUCTIONS,
                     'experimentalRawEvents':False})
                 self.update(session['id'],thread_id=result['thread']['id'],epoch=self.epoch,state='IDLE')
-                self.notify(session,'created:'+session['id'],'대화 연결을 준비했습니다. 이후 지시는 같은 Codex 대화에서 이어갑니다.')
+                with self.store.connect() as db:
+                    queued = db.execute("SELECT 1 FROM codex_commands WHERE session_id=? AND op='message' AND state='QUEUED'",(session['id'],)).fetchone()
+                if not queued:
+                    self.notify(session,'created:'+session['id'],'대화가 연결되었습니다.\n할 일을 평소 말하듯 보내 주세요.')
             elif row['op'] == 'recover':
                 if session['state'] != 'UNKNOWN' or not session['thread_id']:
                     raise RpcError('연결 복구 대상의 상태가 바뀌었습니다')
                 result = await self.rpc('thread/resume',{'threadId':session['thread_id'],'cwd':session['cwd'],
                     'approvalPolicy':'on-request','approvalsReviewer':'user','sandbox':'workspace-write',
-                    'developerInstructions':project.get('scope','')+QUESTION_INSTRUCTIONS})
+                    'developerInstructions':project.get('scope','')+QUESTION_INSTRUCTIONS+MESSAGE_INSTRUCTIONS})
                 thread = result['thread']
                 if thread.get('cwd') != session['cwd'] or any(t.get('status') == 'inProgress' for t in thread.get('turns',[])):
                     raise RpcError('복구한 대화의 작업공간 또는 실행 상태를 확인해 주세요')
@@ -266,7 +285,7 @@ class Bridge:
                         db.execute("UPDATE codex_sessions SET state='IDLE' WHERE id=? AND state='WAITING' AND turn_id IS NULL AND NOT EXISTS (SELECT 1 FROM codex_questions WHERE session_id=? AND state IN ('PENDING','ANSWERING','SENDING'))",(session['id'],session['id']))
             if unknown or row['op'] == 'create':
                 self.update(session['id'],state='UNKNOWN' if unknown else 'FAILED')
-            self.notify(session,'command-error:'+row['id'],('전송 결과 미확인. 자동 재전송하지 않습니다. ' if unknown else '지시를 실행하지 않았습니다. ')+redact_text(str(exc),500))
+            self.notify(session,'command-error:'+row['id'],('지시가 전달됐는지 확인하지 못했습니다.\n중복 실행을 피하려고 다시 보내지 않았습니다.\n/codex status 에서 상태와 복구 방법을 확인해 주세요.' if unknown else '지시를 실행하지 않았습니다.\n/codex status 에서 현재 상태를 확인해 주세요.')+'\n\n상세 내용(참고)\n'+redact_text(str(exc) or type(exc).__name__,500))
 
     async def answers(self):
         with self.store.connect() as db:

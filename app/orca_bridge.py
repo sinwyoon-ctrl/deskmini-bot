@@ -17,6 +17,7 @@ from pathlib import Path
 from app.orca_handoff import Handoff, LABELS, choice, project_context
 from app.redact import redact_text
 from app.state import StateStore, utc_now
+from app.telegram_copy import local_time
 
 TERMINAL = {"SUCCEEDED", "FAILED"}
 ACTIVE = {"CREATING", "STARTING", "RUNNING", "UNKNOWN", "ATTENTION", "HANDOFF", "STOPPING", "BLOCKED"}
@@ -114,9 +115,17 @@ class OrcaQueue:
         if not rows:
             stored = "Orca 등록 작업이 없습니다."
         else:
-            stored = "\n\n".join(f"{r['id']} · {LABELS.get(r['state'],r['state'])} ({r['state']}) · {r['model'] or r['agent']} / {r['project']}\n"
-            f"{r['request_text'][:180]}\nRun: {r['run_id'] or '-'} · Task: {r['task_id'] or '-'} · Dispatch: {r['dispatch_id'] or '-'}\n"
-            f"최근 확인: {r['updated_at']}\n{r['error'] or r['summary'] or ''}" for r in rows[-8:])
+            cards = []
+            for row in rows[-8:]:
+                card = f"{row['project']} · {row['model'] or row['agent']}\n상태: {LABELS.get(row['state'],'확인 필요')}\n"
+                card += f"요청: {row['request_text'][:180]}\n마지막 확인: {local_time(row['updated_at'])}\n"
+                if row['error'] or row['summary']:
+                    card += (row['error'] or row['summary'])+'\n'
+                card += '작업 번호: '+row['id']
+                if key:
+                    card += f"\n실행 기록: {row['run_id'] or '-'}\n작업 기록: {row['task_id'] or '-'}\n전달 기록: {row['dispatch_id'] or '-'}"
+                cards.append(card)
+            stored = '\n\n'.join(cards)
         if not key and (self.store.db_path.parent / "orca-sessions.json").is_file():
             from app.orca_sessions import describe_sessions
             return describe_sessions(self.store) + "\n\nOrca 발주 기록\n" + stored

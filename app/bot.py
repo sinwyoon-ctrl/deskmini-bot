@@ -83,6 +83,7 @@ from app.retry import RETRY_MARGIN, parse_reset_time, reset_pending, scheduled_t
 from app.runner import RunnerError, TaskRunner
 from app.redact import redact_html, redact_text
 from app.state import ConflictError, StateStore
+from app.telegram_copy import local_time, state_label
 from app.todo import HubTodo
 from app.verify import VerificationError, Verifier, build_reviewer
 from app.visual import STATUS_LABELS as HANDOFF_STATUS_LABELS
@@ -1332,7 +1333,7 @@ class ChiefBot:
         if not docker.get("ok"):
             container_lines = [f"• 미확인: {esc(docker.get('error') or 'Docker 조회 실패')}"]
         active = self.store.list_tasks_in_states(ACTIVE_STATES)
-        task_lines = [f"• <code>{esc(task['id'])}</code>: {esc(task['state'])}" for task in active] or ["• 진행 중 작업 없음"]
+        task_lines = [f"• {esc(task['project_id'])} · {esc(state_label(task['state']))}\n  작업 번호: <code>{esc(task['id'])}</code>" for task in active] or ["• 진행 중인 봇 관리 작업이 없습니다."]
         conclusion = "관리 작업 실행 중" if active else "관리 작업 대기 중"
         unconfirmed = []
         if not docker.get("ok"):
@@ -1340,21 +1341,21 @@ class ChiefBot:
         if status["remote_control"]["tmux_session"] == "unknown":
             unconfirmed.append("Remote Control 세션")
         return (
-            "<b>결론</b>\n"
+            "<b>데스크미니 상태</b>\n"
             f"{esc(conclusion)}\n\n"
-            "<b>관측 증거</b>\n"
-            f"관측 시각: <code>{esc(status['observed_at'])}</code>\n"
+            "<b>서버 정보</b>\n"
+            f"마지막 확인: {esc(local_time(status['observed_at']))}\n"
             f"호스트: <code>{esc(status['hostname'])}</code>\n"
             f"부하: <code>{esc(status['load_average'])}</code>\n"
             f"메모리 여유: <code>{esc(bytes_human(memory.get('available')))}</code> / {esc(bytes_human(memory.get('total')))}\n"
             f"디스크 여유: <code>{esc(bytes_human(status['disk']['free']))}</code>\n"
             f"Remote Control: <code>{esc(status['remote_control']['tmux_session'])}</code>\n\n"
             "<b>컨테이너</b>\n" + "\n".join(container_lines) + "\n\n"
-            "<b>관리 작업</b>\n" + "\n".join(task_lines) + "\n\n"
-            "<b>미확인</b>\n"
+            "<b>봇이 관리하는 작업</b>\n" + "\n".join(task_lines) + "\n\n"
+            "<b>추가 확인이 필요한 항목</b>\n"
             + ("• " + "\n• ".join(unconfirmed) if unconfirmed else "• 없음")
             + "\n\n<b>Orca 작업</b>\n" + esc(OrcaQueue.load(self.store,self.settings.root).describe())
-            + "\n\n<b>다음 행동</b>\n• 작업 상세는 <code>/task T-...</code>"
+            + "\n\n작업 내용을 더 보려면 <code>/tasks</code>를 보내 주세요."
         )
 
     def _tasks_text(self) -> str:
@@ -1363,7 +1364,7 @@ class ChiefBot:
             return "등록된 작업이 없습니다."
         lines = ["<b>최근 작업</b>"]
         lines.extend(
-            f"• <code>{esc(task['id'])}</code> · {esc(task['project_id'])} · <b>{esc(task['state'])}</b>"
+            f"• {esc(task['project_id'])} · <b>{esc(state_label(task['state']))}</b>\n  작업 번호: <code>{esc(task['id'])}</code>"
             for task in tasks
         )
         return "\n".join(lines)
@@ -1389,7 +1390,7 @@ class ChiefBot:
             f"<b>결론</b>\n{esc(conclusion)}\n\n"
             f"<b>관측 증거 · {esc(task_id)}</b>\n"
             f"프로젝트: <code>{esc(task['project_id'])}</code>\n"
-            f"상태: <b>{esc(task['state'])}</b>\n"
+            f"상태: <b>{esc(state_label(task['state']))}</b>\n"
             f"버전: {esc(task['version'])}\n"
             f"기준 SHA: <code>{esc((task.get('base_sha') or '미확인')[:12])}</code>\n"
             f"결과 SHA: <code>{esc((task.get('head_sha') or '미확인')[:12])}</code>\n"

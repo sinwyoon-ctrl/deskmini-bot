@@ -101,8 +101,55 @@ class Sessions(unittest.TestCase):
         self.question('item/commandExecution/requestApproval',command='printf test',cwd=str(self.root),
                       additionalPermissions={'network':{'enabled':True}},networkApprovalContext={'host':'example.test','protocol':'https'})
         text = self.store.pending_outbox()[-1]['payload']['text']
-        for word in ('example.test','additionalPermissions',str(self.root)):
+        for word in ('example.test','추가로 요청한 권한',str(self.root)):
             self.assertIn(word,text)
+
+    def test_multi_question_accepts_numbered_answers_without_changing_protocol(self):
+        q = self.question(questions=[{'id':'name','question':'이름은?','options':[]},
+                                     {'id':'folder','question':'폴더는?','options':[]}])
+        text = self.store.pending_outbox()[-1]['payload']['text']
+        self.assertIn('질문 번호와 답',text)
+        self.assertNotIn('/codex answer',text)
+        self.api.answer(100,q['id'],'1. alpha\n2. results')
+        response = json.loads(self.query('SELECT response FROM codex_questions WHERE id=?',q['id'])[0]['response'])
+        self.assertEqual(response,{'answers':{'name':{'answers':['alpha']},'folder':{'answers':['results']}}})
+
+    def test_multi_question_rejects_ambiguous_answers_and_preserves_json_compatibility(self):
+        q = self.question(questions=[{'id':'name','question':'이름은?'},{'id':'folder','question':'폴더는?'}])
+        for answer in ('alpha','1. alpha\n1. results','1. alpha\n3. results'):
+            with self.assertRaises(ConflictError):
+                self.api.answer(100,q['id'],answer)
+            self.assertEqual(self.api.pending(self.key)[0]['state'],'PENDING')
+        self.api.answer(100,q['id'],'{"name":"alpha","folder":"results"}')
+        self.assertEqual(self.query('SELECT state FROM codex_questions WHERE id=?',q['id'])[0]['state'],'ANSWERING')
+
+    def test_approval_card_keeps_exact_command_scope_and_unfamiliar_permission_fields(self):
+        command = "python -c 'print(1 < 2)'"
+        self.question('item/commandExecution/requestApproval',command=command,cwd=str(self.root),
+                      additionalPermissions={'newPermission':{'resource':['one','two']}})
+        text = self.store.pending_outbox()[-1]['payload']['text']
+        for value in (command,str(self.root),'newPermission','one','two'):
+            self.assertIn(value,text)
+        self.assertNotIn('"command":',text)
+        self.assertIn('확인 번호: q-',text)
+
+    def test_unknown_status_shows_recovery_step_without_claiming_work_is_running(self):
+        self.bridge.update(self.key,state='UNKNOWN',observed_at=utc_now())
+        text = self.api.describe(100)
+        self.assertIn('/codex recover '+self.key,text)
+        self.assertIn('자동으로 다시 실행하지 않습니다',text)
+        self.assertIn('한국 시간',text)
+        self.assertNotIn('UNKNOWN',text)
+
+    def test_permissions_card_explains_turn_scope_and_keeps_actual_scope(self):
+        q = self.question('item/permissions/requestApproval',permissions={'network':{'enabled':True}})
+        payload = self.store.pending_outbox()[-1]['payload']
+        self.assertIn('이번 요청의 작업이 끝날 때까지',payload['text'])
+        self.assertIn('여러 번 사용될 수 있습니다',payload['text'])
+        self.assertIn('이번 작업 동안 허용',json.dumps(payload['reply_markup'],ensure_ascii=False))
+        self.api.answer(100,q['id'],'accept')
+        response = json.loads(self.query('SELECT response FROM codex_questions WHERE id=?',q['id'])[0]['response'])
+        self.assertEqual(response,{'permissions':{'network':{'enabled':True}},'scope':'turn'})
 
     def test_stale_heartbeat_does_not_accept_work(self):
         with self.store.connect() as db:
@@ -121,6 +168,16 @@ class Sessions(unittest.TestCase):
 class Events(Sessions):
     def run_async(self, fn):
         return asyncio.run(fn())
+
+    def test_started_tool_before_approval_is_described_as_preparation(self):
+        async def check():
+            await self.bridge.event({'method':'item/started','params':{'threadId':'thread-a','item':{
+                'type':'commandExecution','id':'command-before-approval'}}})
+        self.run_async(check)
+        text = self.store.pending_outbox()[-1]['payload']['text']
+        self.assertIn('준비하고 있습니다',text)
+        self.assertNotIn('실행하고 있습니다',text)
+        self.assertEqual(self.session()['state'],'RUNNING')
 
     def test_completion_then_resolved_never_reverts_to_running(self):
         self.question()
@@ -378,3 +435,38 @@ class Routes(fixtures.BotFixture):
         update['message']['from']['id'] = 999
         self.bot._handle_update(update)
         self.assertEqual(api.rows(100),[])
+
+    def test_rendered_question_footer_routes_reply_even_after_focus_switch(self):
+        api,bridge = self.setup_codex()
+        first = api.create(100,'trial','first')
+        bridge.update(first,thread_id='thread-a',epoch=bridge.epoch,state='RUNNING',turn_id='turn-a')
+        bridge.question(api.focused(100),{'id':7,'method':'item/tool/requestUserInput','params':{
+            'threadId':'thread-a','turnId':'turn-a','itemId':'item-a',
+            'questions':[{'id':'name','question':'설명 '*2000+'\n확인 번호: q-0000000000\n이름은?','header':'이름'},
+                         {'id':'folder','question':'폴더는?','header':'폴더'}]}})
+        displayed = self.bot.store.pending_outbox()[-1]['payload']['text']
+        question = api.pending(first)[0]
+        self.assertLessEqual(len(displayed),3500)
+        self.assertIn('확인 번호: '+question['id'],displayed)
+        self.assertIn('대화 번호: '+first,displayed)
+        second = api.create(100,'trial','second')
+        update = self.message('1. alpha\n2. results',8301)
+        update['message']['reply_to_message'] = {'text':displayed}
+        self.bot._handle_update(update)
+        with self.bot.store.connect() as db:
+            row = db.execute('SELECT * FROM codex_questions WHERE id=?',(question['id'],)).fetchone()
+        self.assertEqual(row['state'],'ANSWERING')
+        self.assertEqual(json.loads(row['response']),{'answers':{'name':{'answers':['alpha']},'folder':{'answers':['results']}}})
+        self.assertEqual(api.focused(100)['id'],second)
+
+    def test_permission_callback_receipt_states_duration_before_results(self):
+        api,bridge = self.setup_codex()
+        key = api.create(100,'trial','permission')
+        bridge.update(key,thread_id='thread-a',epoch=bridge.epoch,state='RUNNING',turn_id='turn-a')
+        bridge.question(api.focused(100),{'id':7,'method':'item/permissions/requestApproval','params':{
+            'threadId':'thread-a','turnId':'turn-a','itemId':'item-a','permissions':{'network':{'enabled':True}}}})
+        question = api.pending(key)[0]
+        self.press('cx:'+question['id']+':accept',8401)
+        text = self.tg.sent[-1]['text']
+        self.assertIn('작업이 끝날 때까지 권한',text)
+        self.assertNotIn('이번 실행',text)

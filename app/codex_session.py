@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.redact import redact_text
 from app.state import ConflictError, utc_now
+from app.telegram_copy import local_time, project_name, state_label
 
 
 def load_config(root):
@@ -81,7 +82,7 @@ class CodexSessions:
         if not session:
             raise ConflictError('먼저 Codex 작업을 선택해 주세요: /codex chat')
         if session['state'] not in {'CREATING', 'IDLE', 'RUNNING', 'WAITING'} or (session['epoch'] and session['epoch'] != epoch):
-            raise ConflictError('작업 상태가 미확인입니다. 중복 실행을 막기 위해 지시를 전송하지 않았습니다')
+            raise ConflictError('이전 작업이 어디까지 진행됐는지 확인이 필요해 지시를 보내지 않았습니다.\n/codex status 에서 상태와 복구 방법을 확인해 주세요.')
         if op == 'stop' and not session['turn_id']:
             raise ConflictError('현재 실행 중인 Codex 요청이 없습니다')
         body = redact_text(body.strip(), 8000)
@@ -136,7 +137,11 @@ class CodexSessions:
                             raise ValueError()
                         result = {'answers': {k: {'answers': [v]} for k, v in values.items()}}
                     except (ValueError, TypeError):
-                        raise ConflictError('질문별 답변을 JSON으로 보내 주세요: ' + json.dumps({q['id']: '답변' for q in questions}, ensure_ascii=False))
+                        lines = [re.fullmatch(r'\s*(\d+)[.)]\s*(.+?)\s*', line) for line in answer.splitlines() if line.strip()]
+                        if len(lines) != len(questions) or any(line is None for line in lines) or sorted(int(line[1]) for line in lines) != list(range(1,len(questions)+1)):
+                            raise ConflictError('각 질문의 번호와 답을 한 줄씩 적어 주세요.\n예:\n1. 첫 번째 답\n2. 두 번째 답')
+                        values = {questions[int(line[1])-1]['id']: line[2] for line in lines}
+                        result = {'answers': {k: {'answers': [v]} for k,v in values.items()}}
             elif method in {'item/commandExecution/requestApproval', 'item/fileChange/requestApproval'}:
                 if answer not in {'accept', 'decline', 'cancel'}:
                     raise ConflictError('실행 승인은 해당 질문의 승인·거절 버튼으로 선택해 주세요')
@@ -156,13 +161,21 @@ class CodexSessions:
         focus = self.focused(chat_id)
         try:
             self.ready()
-            status = '연결 정상'
+            status = '코덱스에 연결되어 있습니다.'
         except ConflictError as exc:
             status = str(exc)
-        labels = {'CREATING':'연결 준비 중', 'IDLE':'다음 지시 대기', 'RUNNING':'작업 중', 'WAITING':'답변 대기', 'UNKNOWN':'상태 미확인', 'FAILED':'실패'}
-        return 'Codex · ' + status + '\n' + ('\n\n'.join(
-            ('선택됨 · ' if focus and focus['id'] == r['id'] else '') + r['id'] + ' / ' + r['project'] + ' · ' + labels.get(r['state'],r['state']) +
-            '\n확인: '+r['observed_at']+'\n'+r['last_text'][:1000] for r in rows[:5]) or '연결된 작업이 없습니다.')
+        cards = []
+        for row in rows[:5]:
+            selected = focus and focus['id'] == row['id']
+            card = ('지금 대화하는 작업 · ' if selected else '다른 작업 · ') + project_name(self.config,row['project'])
+            card += '\n상태: '+state_label(row['state'])+'\n마지막 확인: '+local_time(row['observed_at'])
+            if row['last_text']:
+                card += '\n\n마지막 응답\n'+row['last_text'][:600]
+            if row['state'] == 'UNKNOWN' and row['thread_id']:
+                card += '\n\n대화 연결을 복구하려면:\n/codex recover '+row['id']+'\n복구해도 이전 지시를 자동으로 다시 실행하지 않습니다.'
+            card += '\n대화 번호: '+row['id']
+            cards.append(card)
+        return status+'\n\n'+('\n\n'.join(cards) or '아직 연결한 작업이 없습니다.\n예: 코덱스로 연결시험 README를 읽어줘')
 
 
 def handle_message(bot, message, update_id):
@@ -182,7 +195,8 @@ def handle_message(bot, message, update_id):
         natural = None
     focused = sessions.focused(chat_id)
     reply_text = (message.get('reply_to_message') or {}).get('text','')
-    anchored = re.search(r'확인 요청 (q-[a-f0-9]{10})',reply_text)
+    anchors = re.findall(r'(?m)^(?:확인 요청 |확인 번호: )(q-[a-f0-9]{10})(?:\s|$)',reply_text)
+    anchored = anchors[-1] if anchors else None
     if not control and text.startswith('/'):
         return False
     if not control and not focused and not natural and not anchored:
@@ -193,12 +207,12 @@ def handle_message(bot, message, update_id):
             parts = argument.split(maxsplit=2)
             action = parts[0]
             if action in {'chat', 'status'}:
-                reply = sessions.describe(chat_id) + '\n\n새 작업: /codex new trial 지시 내용\n선택: /codex use 작업ID · 비서: /assistant'
+                reply = sessions.describe(chat_id) + '\n\n이어서 할 일은 평소 말하듯 보내 주세요.\n다른 대화 선택: /codex use 대화번호\n비서로 돌아가기: /assistant'
             elif action == 'new' and len(parts) >= 2:
                 key = sessions.create(chat_id, parts[1], source+':create')
                 if len(parts) == 3:
                     sessions.submit(chat_id, source, parts[2])
-                reply = 'Codex 연결 접수 · '+key+' / '+parts[1]+'\n이후 일반 문장은 이 작업에 전달합니다. 비서 대화: /assistant'
+                reply = project_name(sessions.config,parts[1])+' 작업에 연결하고 있습니다.\n이어서 할 일은 이 대화에 보내 주세요. 진행 상황과 확인할 내용을 여기로 알려드리겠습니다.'
             elif action == 'use' and len(parts) == 2:
                 sessions.focus(chat_id, parts[1])
                 reply = sessions.describe(chat_id)
@@ -207,35 +221,35 @@ def handle_message(bot, message, update_id):
                 reply = '이전 Codex 대화의 연결 복구를 접수했습니다. 이전 지시는 자동 재실행하지 않습니다.'
             elif action == 'answer' and len(parts) == 3:
                 sessions.answer(chat_id, parts[1], parts[2])
-                reply = '답변을 접수했습니다. 같은 Codex 작업으로 전달합니다.'
+                reply = '답변을 받았습니다. 코덱스에 전달하겠습니다.'
             elif action == 'stop':
                 sessions.submit(chat_id, source, '', 'stop')
                 reply = '선택한 Codex 작업의 중단을 접수했습니다.'
             else:
                 reply = '사용법: /codex chat · /codex new 프로젝트 지시 · /codex use 작업ID · /codex answer 질문ID 답변 · /codex stop'
         elif anchored:
-            sessions.answer(chat_id, anchored[1], text)
-            reply = '답장한 질문의 Codex 작업에 답변을 접수했습니다.'
+            sessions.answer(chat_id, anchored, text)
+            reply = '답변을 받았습니다. 질문한 작업의 코덱스에 전달하겠습니다.'
         elif not focused:
             projects = [name for name,p in sessions.config.get('projects',{}).items() if any(alias in text for alias in [name]+p.get('aliases',[]))]
             if len(projects) != 1:
-                reply = '어느 프로젝트를 Codex에 연결할까요? 현재 연결 가능: '+', '.join(sessions.config.get('projects',{}))+'\n예: 코덱스로 연결시험 README를 읽어줘'
+                reply = '어느 프로젝트에서 작업할까요?\n지금 연결할 수 있는 곳: '+', '.join(project_name(sessions.config,k) for k in sessions.config.get('projects',{}))+'\n예: 코덱스로 연결시험 README를 읽어줘'
             else:
                 key = sessions.create(chat_id, projects[0], source+':create')
                 sessions.submit(chat_id, source, text)
-                reply = 'Codex 연결 접수 · '+key+' / '+projects[0]+'\n이후 일반 문장도 같은 작업에 전달합니다. 비서 대화: /assistant'
+                reply = project_name(sessions.config,projects[0])+' 작업 요청을 받았습니다.\n코덱스에 연결한 뒤 진행 상황과 확인할 내용을 여기로 알려드리겠습니다.'
         else:
             questions = sessions.pending(focused['id'])
             if questions:
                 if message.get('reply_to_message'):
                     raise ConflictError('답장 대상에서 Codex 질문을 확인하지 못했습니다. 질문 메시지에 답장하거나 질문 ID를 지정해 주세요')
                 if len(questions) != 1 or questions[0]['method'] not in {'item/tool/requestUserInput','agentMessage/questions'}:
-                    raise ConflictError('대기 중인 질문의 버튼 또는 /codex answer 질문ID 답변으로 대상과 답을 지정해 주세요')
+                    raise ConflictError('먼저 확인이 필요한 요청이 있습니다.\n해당 메시지의 버튼을 눌러 주세요. 실행 승인은 일반 답장으로 처리하지 않습니다.')
                 sessions.answer(chat_id, questions[0]['id'], text)
-                reply = '질문 답변을 접수했습니다. 같은 Codex 작업으로 전달합니다.'
+                reply = '답변을 받았습니다. 코덱스에 전달하겠습니다.'
             else:
                 key = sessions.submit(chat_id, source, text)
-                reply = 'Codex 지시 접수 · '+key+'\n실행 결과와 확인할 질문을 이 대화로 알려드립니다.'
+                reply = project_name(sessions.config,focused['project'])+' 작업 요청을 받았습니다.\n진행 상황과 확인할 내용을 여기로 알려드리겠습니다.'
         bot._notify('codex:'+source, html.escape(reply))
     except ConflictError as exc:
         bot._notify('codex:'+source, html.escape(str(exc)))
@@ -246,4 +260,10 @@ def handle_callback(bot, data):
     _, key, answer = data.split(':', 2)
     sessions = CodexSessions(bot.store, load_config(bot.settings.root))
     sessions.answer(bot.settings.allowed_chat_id, key, answer)
-    bot._send('답변을 접수했습니다. Codex의 처리 결과를 기다립니다.')
+    reply = {'accept':'이번 실행을 허용한다는 답을 받았습니다.', 'decline':'이 요청을 거절한다는 답을 받았습니다.', 'cancel':'요청을 거절하고 중단한다는 답을 받았습니다.'}.get(answer,'답변을 받았습니다.')
+    if answer == 'accept':
+        with bot.store.connect() as db:
+            question = db.execute('SELECT method FROM codex_questions WHERE id=?',(key,)).fetchone()
+        if question['method'] == 'item/permissions/requestApproval':
+            reply = '이번 요청의 작업이 끝날 때까지 권한을 허용한다는 답을 받았습니다.'
+    bot._send(reply+'\n코덱스의 처리 결과를 확인한 뒤 알려드리겠습니다.')
