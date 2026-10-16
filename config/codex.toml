@@ -7,6 +7,7 @@ aliases = ["연결시험", "연결 시험"]
 scope = "This is an isolated Telegram connection test workspace. Modify files only here. No production, credentials, installation, services, git commit/push, merge or deploy. Ask the user when a choice is required. Communicate in Korean."
 
 [projects.bot]
+conversation_project = "deskmini-bot"
 label = "텔레그램 봇"
 path = "/home/ionenet/orca/workspaces/deskmini-bot/telegram-progress-20261016"
 aliases = ["텔레그램봇", "텔레그램 봇", "봇 개선"]

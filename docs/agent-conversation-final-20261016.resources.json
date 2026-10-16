@@ -1,0 +1,15 @@
+{
+  "fixture_home": "/tmp/tmpbp48vm1b/home",
+  "stage": "PASS",
+  "workspace": "a26c7673-34a6-47d0-a50f-62182a3e9a48::/home/ionenet/orca/workspaces/deskmini-bot/agent-conversation-final-20261016",
+  "workspace_path": "/home/ionenet/orca/workspaces/deskmini-bot/agent-conversation-final-20261016",
+  "codex_workspace": "/home/ionenet/work/agent-conversation-ckp6hyzc",
+  "runtime_id": "d55deb24-cbb3-4028-936e-8ba94f94cf50",
+  "coordinator": "term_fced2d9d-b6b6-42fd-9f2a-b5b128c849ad",
+  "run_id": "run_3f71505b6673",
+  "request_id": "20261016-081321-orca-83bfe314bb97",
+  "dispatch_id": "ctx_52ffaa03d41c",
+  "task_id": "task_07e965f8230e",
+  "worker_released": true,
+  "coordinator_closed": true
+}

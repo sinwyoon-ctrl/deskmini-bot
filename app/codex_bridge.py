@@ -75,7 +75,11 @@ class Bridge:
         payload = {'chat_id':session['chat_id'], 'text':message_card(sender_title('codex',project_name(self.config,session['project']),model=model),text,footer)}
         if buttons:
             payload['reply_markup'] = {'inline_keyboard':buttons}
-        self.store.queue_outbox(dedupe_key='codex:'+self.epoch+':'+key, chat_id=session['chat_id'], method='sendMessage', payload=payload)
+        source = 'codex:'+self.epoch+':'+key
+        if model:
+            with self.store.connect() as db:
+                db.execute('INSERT OR IGNORE INTO telegram_model_sources VALUES(?,?)',(source,'codex'))
+        self.store.queue_outbox(dedupe_key=source, chat_id=session['chat_id'], method='sendMessage', payload=payload)
 
     async def rpc(self, method, params):
         self.sequence += 1

@@ -24,6 +24,7 @@ ownership_ready = false
 scope = "Development source only on hero-chapters-20261012. Preserve dirty work and read project/hub handoff context. Production/admin sites read-only. No credentials, services, merge, push, deploy or commit."
 
 [projects.bot-claude]
+conversation_project = "deskmini-bot"
 label = "텔레그램 봇"
 path = "/home/ionenet/orca/workspaces/deskmini-bot/telegram-claude-bot-20261016"
 worktree = "id:a26c7673-34a6-47d0-a50f-62182a3e9a48::/home/ionenet/orca/workspaces/deskmini-bot/telegram-claude-bot-20261016"

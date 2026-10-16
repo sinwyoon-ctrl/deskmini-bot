@@ -116,6 +116,9 @@ CREATE TABLE IF NOT EXISTS orca_chat_commands (
     dispatch_id TEXT NOT NULL, body TEXT NOT NULL, state TEXT NOT NULL,
     receipt TEXT, created_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS orca_request_conversations (
+    request_id TEXT PRIMARY KEY, context_json TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS claude_permission_sessions (
     request_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, pid INTEGER NOT NULL,
     process_start TEXT NOT NULL, workspace TEXT NOT NULL, dispatch_id TEXT NOT NULL
@@ -302,4 +305,7 @@ CREATE TABLE IF NOT EXISTS codex_runtime (
 CREATE TABLE IF NOT EXISTS codex_activity (
  session_id TEXT PRIMARY KEY REFERENCES codex_sessions(id), epoch TEXT NOT NULL,
  turn_id TEXT, summary TEXT NOT NULL, observed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS telegram_model_sources (
+ dedupe_key TEXT PRIMARY KEY, agent TEXT NOT NULL CHECK(agent IN ('codex','claude'))
 );

@@ -109,6 +109,10 @@ class Handoff:
                 raise ValueError("이미 인계 확인 중입니다. /orca recover 작업ID로 같은 요청을 확인해 주세요")
             db.execute("""INSERT INTO orca_changes(source_key,request_id,agent,model,instruction,state,old_task,old_dispatch,created_at)
                 VALUES(?,?,?,?,?,'PENDING',?,?,?)""", (source,key,agent,model,text,row["task_id"],row["dispatch_id"],utc_now()))
+            if row['chat_id'] is not None:
+                from app.shared_conversation import snapshot
+                conversation = snapshot(self.q.store,row['chat_id'])
+                db.execute('UPDATE orca_changes SET context_json=? WHERE source_key=?',(json.dumps({'telegram_conversation':conversation},ensure_ascii=False),source))
             # This transaction fences a queued initial start as well as another switch.
             db.execute("UPDATE orca_requests SET state='HANDOFF',updated_at=? WHERE id=?", (utc_now(),key))
             return dict(db.execute("SELECT * FROM orca_changes WHERE source_key=?", (source,)).fetchone())
@@ -203,6 +207,10 @@ class Handoff:
                         self.block(bridge,row,change,"이전 작업자 종료는 확인됐지만 native 자원 정리 결과가 미확인입니다. 같은 요청을 recover 해 주세요","UNKNOWN")
                         return
                 snapshot = project_context(self.q.config,row["project"])
+                if change.get('context_json'):
+                    prior_context = json.loads(change['context_json'])
+                    if 'telegram_conversation' in prior_context:
+                        snapshot['telegram_conversation'] = prior_context['telegram_conversation']
                 snapshot["old_terminal_cleanup"] = cleanup
                 snapshot.update(objective=row["request_text"], checkpoint=row["summary"] or row["error"] or "작업자 체크포인트 미보고",
                     instruction=change["instruction"], previous_task=change["old_task"], previous_dispatch=change["old_dispatch"],
