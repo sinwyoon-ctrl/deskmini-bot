@@ -20,6 +20,15 @@ from app.state import StateStore, utc_now
 LOG = logging.getLogger('codex-bridge')
 QUESTION_METHODS = {'item/tool/requestUserInput', 'item/commandExecution/requestApproval',
                     'item/fileChange/requestApproval', 'item/permissions/requestApproval'}
+ASYNC_QUESTION = 'agentMessage/questions'
+QUESTION_INSTRUCTIONS = ('\nUse the blocking request_user_input tool when a user choice is required before continuing. '
+    'Do not use request_user_input_async for a decision that must stop the work. '
+    'If a question tool fails, ask in plain text and stop; never claim buttons were sent. '
+    'Do not ask for secrets over Telegram.')
+
+
+def server_argv(cli, socket_path):
+    return [cli, 'app-server', '--enable', 'default_mode_request_user_input', '--listen', 'unix://'+str(socket_path)]
 
 
 class RpcError(RuntimeError):
@@ -111,6 +120,14 @@ class Bridge:
                 db.execute("UPDATE codex_sessions SET state='RUNNING',observed_at=? WHERE id=? AND state='WAITING' AND turn_id=? AND NOT EXISTS (SELECT 1 FROM codex_questions WHERE session_id=? AND state IN ('PENDING','ANSWERING','SENDING'))", (utc_now(),s['id'],s['turn_id'],s['id']))
         elif method == 'turn/started':
             turn = p['turn']
+            with self.store.transaction() as db:
+                answering = [r['source'][7:] for r in db.execute("SELECT source FROM codex_commands WHERE session_id=? AND state='SENDING' AND expected_turn IS NULL AND source LIKE 'answer:%'",(s['id'],))]
+                questions = db.execute("SELECT id FROM codex_questions WHERE session_id=? AND method=? AND turn_id!=? AND state IN ('PENDING','ANSWERING','SENDING')",(s['id'],ASYNC_QUESTION,turn['id'])).fetchall()
+                for question in questions:
+                    if question['id'] in answering:
+                        continue
+                    db.execute("UPDATE codex_questions SET state='CLOSED' WHERE id=?",(question['id'],))
+                    db.execute("UPDATE codex_commands SET state='REFUSED',error='A newer turn superseded this question' WHERE source=? AND state='QUEUED'",('answer:'+question['id'],))
             self.update(s['id'],state='RUNNING',turn_id=turn['id'])
             self.notify(s,'started:'+turn['id'],'작업을 시작했습니다.')
         elif method == 'item/completed':
@@ -119,6 +136,13 @@ class Bridge:
                 text = redact_text(item.get('text',''),3200)
                 if text:
                     self.update(s['id'],last_text=text)
+                if item.get('questions'):
+                    questions = [{'id':'question-'+str(i),'header':'선택','question':q['title'],
+                        'options':[{'label':v,'description':''} for v in q.get('options') or []]}
+                        for i,q in enumerate(item['questions'])]
+                    self.question(s,{'method':ASYNC_QUESTION,'id':'async:'+item['id'],
+                        'params':{'threadId':p['threadId'],'turnId':p['turnId'],'itemId':item['id'],'questions':questions}})
+                elif text:
                     self.notify(s,'message:'+item['id'],text)
         elif method == 'item/started':
             item = p.get('item',{})
@@ -131,10 +155,13 @@ class Bridge:
         elif method == 'turn/completed':
             turn = p['turn']
             status = turn.get('status')
-            self.update(s['id'],state='IDLE' if status in {'completed','interrupted'} else 'FAILED',turn_id=None)
             with self.store.connect() as db:
-                db.execute("UPDATE codex_questions SET state='CLOSED' WHERE session_id=? AND turn_id=? AND state IN ('PENDING','ANSWERING','SENDING')", (s['id'],turn['id']))
+                db.execute("UPDATE codex_questions SET state='CLOSED' WHERE session_id=? AND turn_id=? AND state IN ('PENDING','ANSWERING','SENDING') AND (method!=? OR ?!='completed')", (s['id'],turn['id'],ASYNC_QUESTION,status))
+                waiting = db.execute("SELECT 1 FROM codex_questions WHERE session_id=? AND method=? AND state IN ('PENDING','ANSWERING','SENDING')",(s['id'],ASYNC_QUESTION)).fetchone()
+            self.update(s['id'],state=('WAITING' if waiting else 'IDLE') if status in {'completed','interrupted'} else 'FAILED',turn_id=None)
             text = {'completed':'이번 요청 처리가 끝났습니다. 다음 지시도 같은 대화로 보내 주세요.', 'interrupted':'이번 요청이 중단되었습니다.'}.get(status,'이번 요청이 실패했습니다. '+redact_text(str(turn.get('error') or ''),700))
+            if status == 'completed' and waiting:
+                text = '질문 답변을 기다립니다. 질문의 버튼을 누르거나 질문 메시지에 답장해 주세요.'
             self.notify(s,'completed:'+turn['id'],text)
 
     def question(self, session, data):
@@ -148,7 +175,7 @@ class Bridge:
             safe = redact(p)
             visible = p.get('reason') or ''
         buttons = []
-        if method == 'item/tool/requestUserInput' and not secret:
+        if method in {'item/tool/requestUserInput', ASYNC_QUESTION} and not secret:
             visible = '\n\n'.join(q['question']+'\n'+'\n'.join(str(i+1)+'. '+o['label'] for i,o in enumerate(q.get('options') or [])) for q in safe['questions'])
             if len(safe['questions']) == 1:
                 buttons = [[{'text':o['label'][:60],'callback_data':f'cx:{key}:{i+1}'}] for i,o in enumerate(safe['questions'][0].get('options') or [])][:8]
@@ -189,7 +216,7 @@ class Bridge:
                 if session['state'] != 'CREATING' or session['thread_id']:
                     raise RpcError('기존 작업을 중복 생성하지 않습니다')
                 result = await self.rpc('thread/start',{'cwd':session['cwd'],'approvalPolicy':'on-request','approvalsReviewer':'user',
-                    'sandbox':'workspace-write','developerInstructions':project.get('scope','')+'\nUse request_user_input for questions needing a user choice. Do not ask for secrets over Telegram.',
+                    'sandbox':'workspace-write','developerInstructions':project.get('scope','')+QUESTION_INSTRUCTIONS,
                     'experimentalRawEvents':False})
                 self.update(session['id'],thread_id=result['thread']['id'],epoch=self.epoch,state='IDLE')
                 self.notify(session,'created:'+session['id'],'대화 연결을 준비했습니다. 이후 지시는 같은 Codex 대화에서 이어갑니다.')
@@ -198,7 +225,7 @@ class Bridge:
                     raise RpcError('연결 복구 대상의 상태가 바뀌었습니다')
                 result = await self.rpc('thread/resume',{'threadId':session['thread_id'],'cwd':session['cwd'],
                     'approvalPolicy':'on-request','approvalsReviewer':'user','sandbox':'workspace-write',
-                    'developerInstructions':project.get('scope','')})
+                    'developerInstructions':project.get('scope','')+QUESTION_INSTRUCTIONS})
                 thread = result['thread']
                 if thread.get('cwd') != session['cwd'] or any(t.get('status') == 'inProgress' for t in thread.get('turns',[])):
                     raise RpcError('복구한 대화의 작업공간 또는 실행 상태를 확인해 주세요')
@@ -218,18 +245,25 @@ class Bridge:
                         'input':[{'type':'text','text':row['body']}]})
                     self.notify(session,'steer:'+row['id'],'작업 중인 요청에 추가 지시를 전달했습니다.')
                 else:
-                    if session['state'] != 'IDLE':
+                    if session['state'] != 'IDLE' and not (row['source'].startswith('answer:') and session['state']=='WAITING' and not session['turn_id']):
                         raise RpcError('접수 후 작업 상태가 바뀌었습니다. 중복 시작하지 않았습니다')
                     result = await self.rpc('turn/start',{'threadId':session['thread_id'],'input':[{'type':'text','text':row['body']}],
                         'approvalPolicy':'on-request','approvalsReviewer':'user','sandboxPolicy':{'type':'workspaceWrite',
                         'writableRoots':[session['cwd']],'networkAccess':False,'excludeTmpdirEnvVar':True,'excludeSlashTmp':True}})
             with self.store.connect() as db:
                 db.execute("UPDATE codex_commands SET state='ACKED' WHERE id=?", (row['id'],))
+                if row['source'].startswith('answer:'):
+                    db.execute("UPDATE codex_questions SET state='RESOLVED' WHERE id=? AND method=? AND state='SENDING'",(row['source'][7:],ASYNC_QUESTION))
+                    db.execute("UPDATE codex_sessions SET state=CASE WHEN turn_id IS NULL THEN 'IDLE' ELSE 'RUNNING' END WHERE id=? AND state='WAITING' AND NOT EXISTS (SELECT 1 FROM codex_questions WHERE session_id=? AND state IN ('PENDING','ANSWERING','SENDING'))",(session['id'],session['id']))
         except Exception as exc:
             unknown = not isinstance(exc, RpcError)
             state = 'UNKNOWN' if unknown else 'REFUSED'
             with self.store.connect() as db:
                 db.execute('UPDATE codex_commands SET state=?,error=? WHERE id=?', (state,redact_text(str(exc),500),row['id']))
+                if row['source'].startswith('answer:'):
+                    db.execute("UPDATE codex_questions SET state=? WHERE id=? AND method=? AND state='SENDING'",('UNKNOWN' if unknown else 'CLOSED',row['source'][7:],ASYNC_QUESTION))
+                    if not unknown:
+                        db.execute("UPDATE codex_sessions SET state='IDLE' WHERE id=? AND state='WAITING' AND turn_id IS NULL AND NOT EXISTS (SELECT 1 FROM codex_questions WHERE session_id=? AND state IN ('PENDING','ANSWERING','SENDING'))",(session['id'],session['id']))
             if unknown or row['op'] == 'create':
                 self.update(session['id'],state='UNKNOWN' if unknown else 'FAILED')
             self.notify(session,'command-error:'+row['id'],('전송 결과 미확인. 자동 재전송하지 않습니다. ' if unknown else '지시를 실행하지 않았습니다. ')+redact_text(str(exc),500))
@@ -243,6 +277,7 @@ class Bridge:
             if q['expires_at'] <= utc_now():
                 with self.store.transaction() as db:
                     changed = db.execute("UPDATE codex_questions SET state='EXPIRED' WHERE id=? AND state IN ('PENDING','ANSWERING')",(q['id'],))
+                    db.execute("UPDATE codex_sessions SET state='IDLE' WHERE id=? AND state='WAITING' AND turn_id IS NULL AND NOT EXISTS (SELECT 1 FROM codex_questions WHERE session_id=? AND state IN ('PENDING','ANSWERING','SENDING'))",(q['session_id'],q['session_id']))
                 if changed.rowcount and session['turn_id'] == q['turn_id'] and session['state'] in {'RUNNING','WAITING'}:
                     try:
                         await self.rpc('turn/interrupt',{'threadId':session['thread_id'],'turnId':q['turn_id']})
@@ -250,6 +285,20 @@ class Bridge:
                     except RpcError:
                         self.notify(session,'expired:'+q['id'],'확인 요청이 만료되었습니다. 현재 작업 상태를 확인해 주세요.')
             elif q['state'] == 'ANSWERING':
+                if q['method'] == ASYNC_QUESTION:
+                    with self.store.transaction() as db:
+                        current = db.execute('SELECT * FROM codex_sessions WHERE id=?',(q['session_id'],)).fetchone()
+                        if current['epoch'] != self.epoch or (current['turn_id'] and current['turn_id'] != q['turn_id']) or current['state'] not in {'IDLE','RUNNING','WAITING'}:
+                            db.execute("UPDATE codex_questions SET state='CLOSED' WHERE id=? AND state='ANSWERING'",(q['id'],))
+                            continue
+                        changed = db.execute("UPDATE codex_questions SET state='SENDING' WHERE id=? AND state='ANSWERING'",(q['id'],))
+                        if changed.rowcount:
+                            params = json.loads(q['params'])
+                            answers = json.loads(q['response'])['answers']
+                            body = '\n'.join(question['question']+'\n사용자 답변: '+', '.join(answers[question['id']]['answers']) for question in params['questions'])
+                            db.execute('INSERT OR IGNORE INTO codex_commands VALUES (?,?,?,?,?,?,?,?,?)',
+                                ('cc-'+secrets.token_hex(5),'answer:'+q['id'],q['session_id'],'message',body,current['turn_id'],'QUEUED','',utc_now()))
+                    continue
                 with self.store.transaction() as db:
                     changed = db.execute("UPDATE codex_questions SET state='SENDING' WHERE id=? AND state='ANSWERING'",(q['id'],))
                 if changed.rowcount:
@@ -308,7 +357,7 @@ async def serve(settings):
         bridge = Bridge(store,config,socket_path)
         bridge.runtime('STARTING')
         socket_path.unlink(missing_ok=True)
-        proc = await asyncio.create_subprocess_exec(config['cli'],'app-server','--listen','unix://'+str(socket_path),
+        proc = await asyncio.create_subprocess_exec(*server_argv(config['cli'],socket_path),
             stdin=asyncio.subprocess.DEVNULL,stdout=asyncio.subprocess.DEVNULL,stderr=asyncio.subprocess.DEVNULL,
             cwd=settings.root)
         try:

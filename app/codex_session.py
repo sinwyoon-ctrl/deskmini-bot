@@ -110,14 +110,16 @@ class CodexSessions:
         if not answer:
             raise ConflictError('답변을 입력해 주세요')
         with self.store.transaction() as db:
-            row = db.execute('SELECT q.* FROM codex_questions q JOIN codex_sessions s ON s.id=q.session_id WHERE q.id=? AND s.chat_id=?', (key, chat_id)).fetchone()
+            row = db.execute('SELECT q.*,s.turn_id AS current_turn FROM codex_questions q JOIN codex_sessions s ON s.id=q.session_id WHERE q.id=? AND s.chat_id=?', (key, chat_id)).fetchone()
             if not row or row['epoch'] != epoch or row['state'] != 'PENDING' or row['expires_at'] <= utc_now():
                 raise ConflictError('이미 처리되었거나 만료된 질문입니다. 현재 질문을 확인해 주세요')
             p = json.loads(row['params'])
             method = row['method']
+            if method == 'agentMessage/questions' and row['current_turn'] and row['current_turn'] != row['turn_id']:
+                raise ConflictError('해당 질문 이후 다른 요청이 시작되었습니다. 현재 질문을 확인해 주세요')
             if answer == 'accept' and p.get('_telegram_approval_unavailable'):
                 raise ConflictError('승인 범위 전체를 표시하지 못한 요청입니다. Orca에서 상세 내용을 확인해 주세요')
-            if method == 'item/tool/requestUserInput':
+            if method in {'item/tool/requestUserInput','agentMessage/questions'}:
                 questions = p.get('questions', [])
                 if any(q.get('isSecret') for q in questions):
                     raise ConflictError('비밀값 질문은 텔레그램으로 답할 수 없습니다')
@@ -227,7 +229,7 @@ def handle_message(bot, message, update_id):
             if questions:
                 if message.get('reply_to_message'):
                     raise ConflictError('답장 대상에서 Codex 질문을 확인하지 못했습니다. 질문 메시지에 답장하거나 질문 ID를 지정해 주세요')
-                if len(questions) != 1 or questions[0]['method'] != 'item/tool/requestUserInput':
+                if len(questions) != 1 or questions[0]['method'] not in {'item/tool/requestUserInput','agentMessage/questions'}:
                     raise ConflictError('대기 중인 질문의 버튼 또는 /codex answer 질문ID 답변으로 대상과 답을 지정해 주세요')
                 sessions.answer(chat_id, questions[0]['id'], text)
                 reply = '질문 답변을 접수했습니다. 같은 Codex 작업으로 전달합니다.'

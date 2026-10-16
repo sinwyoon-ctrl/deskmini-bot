@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from app.codex_bridge import Bridge, RpcError
+from app.codex_bridge import Bridge, RpcError, server_argv, QUESTION_INSTRUCTIONS
 from app.codex_session import CodexSessions
 from app.state import StateStore, ConflictError, utc_now
 
@@ -192,6 +192,140 @@ class Events(Sessions):
         self.run_async(self.bridge.answers)
         self.assertEqual(calls,['turn/interrupt'])
         self.assertEqual(self.session()['state'],'IDLE')
+
+    def async_question(self):
+        async def check():
+            await self.bridge.event({'method':'item/completed','params':{'threadId':'thread-a','turnId':'turn-a',
+                'item':{'type':'agentMessage','id':'async-item','text':'파일 이름을 골라 주세요.','delivery':'async',
+                        'questions':[{'title':'파일 이름은?','options':['alpha','beta']}]}}})
+        self.run_async(check)
+        return self.query('SELECT * FROM codex_questions ORDER BY rowid DESC')[0]
+
+    def test_actual_server_command_enables_default_mode_question_tool(self):
+        args = server_argv('/fixed/codex',self.root/'socket')
+        self.assertEqual(args[args.index('--enable')+1],'default_mode_request_user_input')
+        self.assertIn('request_user_input_async',QUESTION_INSTRUCTIONS)
+
+    def test_async_agent_question_renders_real_buttons_and_survives_turn_end(self):
+        q = self.async_question()
+        payload = self.store.pending_outbox()[-1]['payload']
+        self.assertIn('alpha',json.dumps(payload['reply_markup']))
+        async def complete():
+            await self.bridge.event({'method':'turn/completed','params':{'threadId':'thread-a','turn':{'id':'turn-a','status':'completed'}}})
+        self.run_async(complete)
+        self.assertEqual(self.session()['state'],'WAITING')
+        self.assertEqual(self.api.pending(self.key)[0]['id'],q['id'])
+
+    def test_async_answer_after_turn_end_goes_to_original_thread_once(self):
+        q = self.async_question()
+        self.bridge.update(self.key,state='WAITING',turn_id=None)
+        self.api.answer(100,q['id'],'2')
+        self.run_async(self.bridge.answers)
+        self.run_async(self.bridge.answers)
+        rows = self.query('SELECT * FROM codex_commands WHERE source=?','answer:'+q['id'])
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['session_id'],self.key)
+        self.assertIn('beta',rows[0]['body'])
+        calls = []
+        async def rpc(method,params):
+            calls.append((method,params))
+            return {'turn':{'id':'turn-b','status':'inProgress'}}
+        self.bridge.rpc = rpc
+        async def command():
+            await self.bridge.command(rows[0])
+        self.run_async(command)
+        self.assertEqual(calls[0][0],'turn/start')
+        self.assertEqual(calls[0][1]['threadId'],'thread-a')
+        self.assertEqual(self.query('SELECT state FROM codex_questions WHERE id=?',q['id'])[0]['state'],'RESOLVED')
+
+    def test_async_answer_during_same_turn_steers_the_exact_turn(self):
+        q = self.async_question()
+        self.api.answer(100,q['id'],'1')
+        self.run_async(self.bridge.answers)
+        row = self.query('SELECT * FROM codex_commands WHERE source=?','answer:'+q['id'])[0]
+        calls = []
+        async def rpc(method,params):
+            calls.append((method,params))
+            return {'turnId':'turn-a'}
+        self.bridge.rpc = rpc
+        async def command():
+            await self.bridge.command(row)
+        self.run_async(command)
+        self.assertEqual(calls[0][0],'turn/steer')
+        self.assertEqual(calls[0][1]['expectedTurnId'],'turn-a')
+
+    def test_async_old_question_cannot_answer_a_new_turn(self):
+        q = self.async_question()
+        self.bridge.update(self.key,state='RUNNING',turn_id='turn-b')
+        with self.assertRaises(ConflictError):
+            self.api.answer(100,q['id'],'1')
+
+    def test_failed_async_delivery_does_not_leave_a_permanent_wait(self):
+        q = self.async_question()
+        self.api.answer(100,q['id'],'1')
+        self.run_async(self.bridge.answers)
+        self.bridge.update(self.key,state='WAITING',turn_id=None)
+        row = self.query('SELECT * FROM codex_commands WHERE source=?','answer:'+q['id'])[0]
+        async def command():
+            await self.bridge.command(row)
+        self.run_async(command)
+        self.assertEqual(self.query('SELECT state FROM codex_questions WHERE id=?',q['id'])[0]['state'],'CLOSED')
+        self.assertEqual(self.session()['state'],'IDLE')
+
+    def test_expired_async_question_releases_idle_conversation(self):
+        q = self.async_question()
+        self.bridge.update(self.key,state='WAITING',turn_id=None)
+        with self.store.connect() as db:
+            db.execute("UPDATE codex_questions SET expires_at='2000-01-01' WHERE id=?",(q['id'],))
+        self.run_async(self.bridge.answers)
+        self.assertEqual(self.session()['state'],'IDLE')
+        self.api.submit(100,'after-expiry','질문이 만료된 뒤의 새 지시')
+        calls = []
+        async def rpc(method,params):
+            calls.append(method)
+            return {'turn':{'id':'next','status':'inProgress'}}
+        self.bridge.rpc = rpc
+        async def command():
+            await self.bridge.command(self.query("SELECT * FROM codex_commands WHERE source='after-expiry'")[0])
+        self.run_async(command)
+        self.assertEqual(calls,['turn/start'])
+
+    def test_async_question_stays_closed_after_a_newer_turn_has_completed(self):
+        q = self.async_question()
+        async def newer():
+            await self.bridge.event({'method':'turn/started','params':{'threadId':'thread-a','turn':{'id':'turn-b','status':'inProgress'}}})
+            await self.bridge.event({'method':'turn/completed','params':{'threadId':'thread-a','turn':{'id':'turn-b','status':'completed'}}})
+        self.run_async(newer)
+        with self.assertRaises(ConflictError):
+            self.api.answer(100,q['id'],'1')
+
+    def test_queued_async_answer_is_not_sent_after_a_newer_turn(self):
+        q = self.async_question()
+        self.bridge.update(self.key,state='WAITING',turn_id=None)
+        self.api.answer(100,q['id'],'1')
+        self.run_async(self.bridge.answers)
+        row = self.query('SELECT * FROM codex_commands WHERE source=?','answer:'+q['id'])[0]
+        async def newer():
+            await self.bridge.event({'method':'turn/started','params':{'threadId':'thread-a','turn':{'id':'turn-b','status':'inProgress'}}})
+            await self.bridge.event({'method':'turn/completed','params':{'threadId':'thread-a','turn':{'id':'turn-b','status':'completed'}}})
+            await self.bridge.command(row)
+        self.run_async(newer)
+        self.assertEqual(self.query('SELECT state FROM codex_commands WHERE id=?',row['id'])[0]['state'],'REFUSED')
+
+    def test_answer_causing_a_new_turn_is_not_closed_by_its_own_start(self):
+        q = self.async_question()
+        self.bridge.update(self.key,state='WAITING',turn_id=None)
+        self.api.answer(100,q['id'],'1')
+        self.run_async(self.bridge.answers)
+        row = self.query('SELECT * FROM codex_commands WHERE source=?','answer:'+q['id'])[0]
+        async def rpc(method,params):
+            await self.bridge.event({'method':'turn/started','params':{'threadId':'thread-a','turn':{'id':'turn-b','status':'inProgress'}}})
+            return {'turn':{'id':'turn-b','status':'inProgress'}}
+        self.bridge.rpc = rpc
+        async def command():
+            await self.bridge.command(row)
+        self.run_async(command)
+        self.assertEqual(self.query('SELECT state FROM codex_questions WHERE id=?',q['id'])[0]['state'],'RESOLVED')
 
 
 import test_watch as fixtures

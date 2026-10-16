@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from test_watch import BotFixture
-from app.codex_bridge import Bridge
+from app.codex_bridge import Bridge, server_argv
 from app.codex_session import CodexSessions
 from websockets.asyncio.client import unix_connect
 
@@ -41,7 +41,7 @@ async def main():
             subprocess.run(['git','init','-q',name],check=True)
             config = {'enabled':True,'cli':'/home/ionenet/.local/bin/codex','projects':{'trial':{'path':name,'scope':'Isolated connection test. Work only here. Do not run hub or access credentials. No git commit/push. Use Korean.'}}}
             sock = name+'/s.sock'
-            proc = subprocess.Popen([config['cli'],'app-server','--listen','unix://'+sock],cwd=name,
+            proc = subprocess.Popen(server_argv(config['cli'],sock),cwd=name,
                                     stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             await until(lambda:Path(sock).exists(),10)
             bridge = Bridge(fixture.bot.store,config,Path(sock))
@@ -57,9 +57,7 @@ async def main():
             phase = 'question'
             async def rpc(method,params):
                 nonlocal model
-                if method == 'turn/start' and phase == 'question':
-                    params = dict(params,collaborationMode={'mode':'plan','settings':{'model':model,'reasoning_effort':'low','developer_instructions':None}})
-                elif method == 'turn/start' and phase == 'approval':
+                if method == 'turn/start' and phase == 'approval':
                     params = dict(params,approvalPolicy='untrusted',collaborationMode={'mode':'default','settings':{'model':model,'reasoning_effort':'low','developer_instructions':None}})
                 result = await original_rpc(method,params)
                 if method == 'thread/start':
