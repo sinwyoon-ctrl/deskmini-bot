@@ -99,13 +99,13 @@ class AskInsteadOfRefuseTests(SemanticFixture):
         self.select_codex()
         before=len(self.codex_messages())
         with self.answer('ambiguous'):
-            self.f.say('APRIL-READ-01 승인')
+            self.f.say('어제 말한 그 건 처리')
         self.assertEqual(len(self.codex_messages()),before)
         self.assertIn('골라 주세요',self.last())
         self.press('작업에 지시로')
         messages=self.codex_messages()
         self.assertEqual(len(messages),before+1)
-        self.assertIn('APRIL-READ-01 승인',messages[-1]['body'])
+        self.assertIn('어제 말한 그 건 처리',messages[-1]['body'])
         self.assertIn('코덱스에 작업 요청을 접수',self.last())
         # Telegram may redeliver the tap; the saved message is not sent twice.
         self.press('작업에 지시로')
@@ -138,7 +138,7 @@ class AskInsteadOfRefuseTests(SemanticFixture):
     def test_card_from_wrong_chat_or_unknown_row_is_ignored(self):
         self.select_codex()
         with self.answer('ambiguous'):
-            self.f.say('APRIL-READ-01 승인')
+            self.f.say('어제 말한 그 건 처리')
         before=len(self.codex_messages())
         self.f.press('ar:999999:work',update_id=9001)
         self.assertIn('찾지 못했습니다',self.last())

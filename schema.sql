@@ -317,3 +317,8 @@ CREATE TABLE IF NOT EXISTS telegram_conversation_jobs (
 CREATE TABLE IF NOT EXISTS telegram_agent_usage (
  agent TEXT PRIMARY KEY, observed_at TEXT NOT NULL, limits_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS external_approvals (
+    id TEXT PRIMARY KEY, path TEXT NOT NULL, requester TEXT, summary TEXT,
+    created_at TEXT NOT NULL, expires_at TEXT NOT NULL, state TEXT NOT NULL,
+    decision TEXT, decided_at TEXT, decided_source TEXT, seen_at TEXT NOT NULL
+);

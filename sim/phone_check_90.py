@@ -136,12 +136,10 @@ def main():
     with sim.f.bot.store.connect() as db:
         db.execute('UPDATE inbox SET received_at=?', (stamp,))
     sim.new_replies()
+    # An ID followed by 승인 is an approval attempt: it ends in a notice (not a registered request), never an ask card.
     text, intent, before = REAL[5]
     sim.say(text, intent, reply='…독립 테스트는 성공했습니다.\n\n[승인 요청 APRIL-READ-01]\n추가 브라우저 조사는 …')
     show(f'{text} (알림 메시지에 답장)  (수정 전: {before})', sim.new_replies(), sim.side_effects())
-    with patch.object(sim.f.bot, '_chat_reply') as chat:
-        sim.press('비서')
-    show('  ↳ 버튼 「비서(봇)에게 묻기」 → 비서 대화층 호출 ' + str(chat.call_args.args[:1]), sim.new_replies(), sim.side_effects())
     text, intent, before = REAL[6]
     sim.say(text, intent)
     show(f'{text}  (수정 전: {before})', sim.new_replies(), sim.side_effects())

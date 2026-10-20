@@ -307,6 +307,9 @@ class ChiefBot:
             self._send("텍스트, 사진, 문서(pdf·txt·md·csv·json)만 처리할 수 있습니다.")
             return
         command = text.strip().split(maxsplit=1)[0].split("@", 1)[0].lower()
+        from app.external_approvals import handle_message as approval_message
+        if approval_message(self, message, update_id):
+            return
         from app.agent_routing import handle_message as agent_message
         if agent_message(self, message, update_id):
             return
@@ -795,6 +798,10 @@ class ChiefBot:
         if data.startswith("cx:"):
             from app.codex_session import handle_callback as codex_callback
             codex_callback(self, data)
+            return
+        if data.startswith("xa:"):
+            from app.external_approvals import handle_callback as approval_callback
+            approval_callback(self, data)
             return
         if data.startswith("ar:"):
             from app.agent_routing import handle_callback as route_callback
@@ -1641,6 +1648,11 @@ class ChiefBot:
             self._check_handoffs()
         except Exception as exc:
             LOG.error("Hand-off check failed: %s", type(exc).__name__)
+        try:
+            from app.external_approvals import scan as scan_external_approvals
+            scan_external_approvals(self)
+        except Exception as exc:
+            LOG.error("External approval scan failed: %s", type(exc).__name__)
 
     def watch_tick(
         self, now: datetime | None = None, observation: Observation | None = None
