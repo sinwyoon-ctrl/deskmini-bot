@@ -211,6 +211,7 @@ def build_snapshot(
                 "SELECT id,project,agent,model,state,summary,error,updated_at FROM orca_requests ORDER BY rowid DESC LIMIT 5")]
     except Exception:
         sections["orca_tasks"] = "미확인"
+    sections["telegram_routing"] = routing_summary(store)
     try:
         from app.codex_usage import latest_codex_limits
         limits = latest_codex_limits(paths.home)
@@ -236,7 +237,7 @@ def build_snapshot(
     text = json.dumps(sections, ensure_ascii=False, separators=(",", ":"), default=str)
     if len(text) > SNAPSHOT_LIMIT:
         # Preserve section names and valid JSON; targeted lookups retrieve omitted evidence.
-        for name in ("agent_hub_board", "repos", "agent_hub_recent_log", "orca_tasks", "bot_tasks", "host"):
+        for name in ("agent_hub_board", "repos", "agent_hub_recent_log", "orca_tasks", "bot_tasks", "host", "telegram_routing"):
             if len(text) <= SNAPSHOT_LIMIT:
                 break
             raw = json.dumps(sections[name], ensure_ascii=False, default=str)
@@ -248,6 +249,84 @@ def build_snapshot(
                            "truncated": True} for name, value in sections.items()}
     from app.redact import redact
     return json.dumps(redact(sections), ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+ROUTING_LIMIT = 1_200
+
+
+def routing_summary(store: Any) -> Any:
+    """텔레그램 라우팅 상태(읽기 전용): 고른 모델·그 작업·미답 질문·열린 선택 카드·대기 중 외부 승인.
+    chat id 는 넣지 않고, 전체를 마스킹한 뒤 ROUTING_LIMIT 자 안으로 줄인다. 실패는 '미확인'."""
+    try:
+        with store.connect() as db:
+            def rows(query: str, params: tuple = ()) -> list[Any]:
+                try:
+                    return [dict(r) for r in db.execute(query, params)]
+                except Exception:
+                    return []
+
+            focus = rows("SELECT agent FROM telegram_agent_focus ORDER BY source_order DESC LIMIT 1")
+            targets: dict[str, Any] = {}
+            for row in rows("SELECT agent,target_id FROM telegram_agent_targets ORDER BY source_order DESC"):
+                agent, target = str(row["agent"]), row["target_id"]
+                if agent in targets:
+                    continue
+                info: dict[str, Any] = {"target_id": target}
+                if target:
+                    if agent == "codex":
+                        found = rows("SELECT project,state FROM codex_sessions WHERE id=?", (target,))
+                    elif agent == "claude":
+                        found = rows("SELECT project,state FROM orca_requests WHERE id=?", (target,))
+                    else:
+                        found = []
+                    if found:
+                        info |= {"project": found[0]["project"], "state": found[0]["state"]}
+                targets[agent] = info
+            counts = {"codex": 0, "claude": 0}
+            for key, table in (("codex", "codex_questions"), ("claude", "orca_questions")):
+                found = rows(f"SELECT COUNT(*) AS n FROM {table} WHERE state='PENDING'")
+                counts[key] = int(found[0]["n"]) if found else 0
+            cards = [
+                str(r["body"] or "")[:80]
+                for r in rows(
+                    "SELECT json_extract(plan,'$.body') AS body FROM telegram_agent_inputs "
+                    "WHERE json_extract(plan,'$.ask')=1 AND json_extract(plan,'$.picked') IS NULL "
+                    "ORDER BY rowid DESC LIMIT 3"
+                )
+            ]
+            approvals = [
+                {"id": r["id"], "summary": str(r["summary"] or "")[:120], "expires_at": r["expires_at"]}
+                for r in rows(
+                    "SELECT id,summary,expires_at FROM external_approvals WHERE state='PENDING' "
+                    "ORDER BY created_at DESC LIMIT 5"
+                )
+            ]
+    except Exception:
+        return "미확인"
+    result: dict[str, Any] = {
+        "selected_agent": focus[0]["agent"] if focus else None,
+        "targets": targets,
+        "pending_questions": counts,
+        "open_ask_cards": cards,
+        "external_approvals_pending": approvals,
+    }
+
+    def clean() -> Any:
+        raw = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        try:
+            return json.loads(redact_text(raw, 100_000))
+        except ValueError:
+            return {"excerpt": redact_text(raw, 600), "truncated": True}
+
+    while len(json.dumps(clean(), ensure_ascii=False, separators=(",", ":"))) > ROUTING_LIMIT:
+        for key in ("external_approvals_pending", "open_ask_cards"):
+            if result[key]:
+                result[key] = result[key][:-1]
+                break
+        else:
+            raw = json.dumps(clean(), ensure_ascii=False, separators=(",", ":"))
+            return {"excerpt": raw[:600], "truncated": True}
+    return clean()
 
 
 def jobs_summary(paths: WorkspacePaths, count: int = 6) -> list[dict[str, Any]]:
