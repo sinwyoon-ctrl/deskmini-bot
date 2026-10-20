@@ -51,7 +51,10 @@ def interpret(bot,body,agent,pending_question=False,source=None,question_context
             intent='ambiguous'
         bot.store.add_event(None,None,'AGENT_ROUTE_INTERPRETATION','claude-api',
                             {'intent':intent,'agent':agent,'source':source,'model':result.model,'usage':result.usage})
-        if intent=='ambiguous' and status_query(body)!='mixed':return 'blocked'
+        if intent=='ambiguous' and status_query(body)!='mixed':
+            # Unclear is not a refusal: the routing layer asks the user which way to send it
+            # (work, pending-question answer, read-only chat, or the assistant) and sends nothing until chosen.
+            return 'unclear'
         return intent
     except Exception:
         bot.store.add_event(None,None,'AGENT_ROUTE_INTERPRETATION_FAILED','claude-api',{'agent':agent,'source':source})

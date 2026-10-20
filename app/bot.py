@@ -796,6 +796,10 @@ class ChiefBot:
             from app.codex_session import handle_callback as codex_callback
             codex_callback(self, data)
             return
+        if data.startswith("ar:"):
+            from app.agent_routing import handle_callback as route_callback
+            route_callback(self, data)
+            return
         if data.startswith("approve:"):
             _, action, approval_id = data.split(":", 2)
             try:

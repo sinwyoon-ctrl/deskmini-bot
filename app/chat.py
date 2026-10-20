@@ -214,6 +214,9 @@ class ChatConfig:
     timeout_seconds: float = 60.0
     history_turns: int = 10
     semantic_routing: bool = False
+    # Hours since the last message routed to a selected model after which an unnamed chat-like
+    # message goes back to the assistant. 0 keeps the old behaviour (selection never lapses).
+    agent_focus_ttl_hours: float = 12.0
 
     @classmethod
     def load(cls, path: Path) -> "ChatConfig":
@@ -234,6 +237,7 @@ class ChatConfig:
             timeout_seconds=float(raw.get("timeout_seconds", default.timeout_seconds)),
             history_turns=int(raw.get("history_turns", default.history_turns)),
             semantic_routing=raw.get('semantic_routing') is True,
+            agent_focus_ttl_hours=max(0.0, float(raw.get('agent_focus_ttl_hours', default.agent_focus_ttl_hours))),
         )
 
 

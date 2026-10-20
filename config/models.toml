@@ -11,6 +11,9 @@ tools = ["Read", "Edit", "Write", "Glob", "Grep"]
 # 대화 응답층. 앞 순서부터 시도한다. claude 는 ANTHROPIC_API_KEY 가 env 파일에 있을 때만 시도한다.
 [chat]
 semantic_routing = true
+# 마지막으로 모델에 보낸 메시지 뒤 이 시간이 지나면, 이름 없이 보낸 인사·일반 질문은 마지막에 고른 모델이 아니라
+# 비서 대화로 답한다. 작업 지시·상태·사용량 조회는 그대로 고른 모델로 간다. 0 이면 선택이 만료되지 않는다(이전 동작).
+agent_focus_ttl_hours = 12
 providers = ["claude", "gemini"]
 model = "claude-sonnet-5-5"
 effort = "low"
