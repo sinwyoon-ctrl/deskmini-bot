@@ -1,0 +1,93 @@
+# 실제 폰 문장 재생 — 수정 후 동작 (FakeTelegram, API/CLI 모의, 전송 없음)
+# 수정 전 폰 화면은 운영 outbox 기록(읽기 전용)에서 옮겨 적었다.
+
+### 클로드야 지금 주간 쿼터 얼마나 남았어  (수정 전: 어느 프로젝트에서 작업할까요? (10/16 08:21, 수정 전 코드))
+  봇 → [봇 안내 · 클로드]
+        사용 한도 기록을 조회하고 있습니다. 관측된 수치와 시각을 알려드리겠습니다.
+  봇 → [봇 안내 · 클로드]
+        
+        Claude 사용 한도
+        5시간: 69% 남음 · 31% 사용
+        주간: 91% 남음 · 9% 사용
+        관측: 10월 20일 20:32 (한국 시간) · DeskMini Claude CLI 제공 기록 기준
+  부수효과: {'codex_messages': 0, 'claude_requests': 0, 'chat_jobs': [('claude', 'quota', 'DONE')], 'focus': ['claude']}
+
+### 그래서 얼마나 남았어?  (수정 전: Claude 사용 한도 5시간/주간 수치 (10/16 10:16, 정상))
+  봇 → [봇 안내 · 클로드]
+        Claude 사용 한도
+        5시간: 69% 남음 · 31% 사용
+        주간: 91% 남음 · 9% 사용
+        관측: 10월 20일 20:32 (한국 시간) · DeskMini Claude CLI 제공 기록 기준
+  부수효과: {'codex_messages': 0, 'claude_requests': 0, 'chat_jobs': [('claude', 'quota', 'DONE')], 'focus': ['claude']}
+
+### 아니 코덱스 비즈아이원 얼마나 남았어  (수정 전: Claude 사용 한도 — 코덱스를 물었는데 클로드 수치 (10/16 10:16))
+  봇 → [봇 안내 · 코덱스]
+        DeskMini Codex 사용 한도
+        • 주간: 43% 사용 · 57% 남음 · 초기화 10-23 20:32
+        
+        관측: 마지막 Codex 실행 10-20 20:32 기준 (요금제 prolite)
+        메인 PC Codex 도 같은 계정이면 한도를 함께 씁니다. 그 사용분은 다음 DeskMini 실행 때 반영됩니다.
+  부수효과: {'codex_messages': 0, 'claude_requests': 0, 'chat_jobs': [('claude', 'quota', 'DONE')], 'focus': ['claude']}
+
+### 자 클로드 텔레그램 연동 최적화 작업 계속 할까  (수정 전: 요청의 뜻이나 중간 해석 결과를 하나로 확인하지 못해 … 전달하지 않았습니다 (10/16 09:12))
+  봇 → [봇 안내 · 클로드]
+        이 문장을 클로드 작업 지시로 보낼지, 대화로 물을지 정하지 못했습니다. 버튼으로 골라 주세요. 고르기 전에는 어디에도 보내지 않습니다.
+        버튼: 클로드 작업에 지시로 보내기 | 클로드에게 대화로 묻기(읽기 전용) | 비서(봇)에게 묻기
+  부수효과: {'codex_messages': 0, 'claude_requests': 0, 'chat_jobs': [('claude', 'quota', 'DONE')], 'focus': ['claude']}
+
+###   ↳ 버튼 「클로드에게 대화로 묻기」
+  봇 → [봇 안내 · 클로드]
+        답변을 준비하고 있습니다. 기존 작업과 미답 질문은 유지합니다.
+  부수효과: {'codex_messages': 0, 'claude_requests': 0, 'chat_jobs': [('claude', 'quota', 'DONE'), ('claude', 'chat', 'QUEUED')], 'focus': ['claude']}
+
+###   ↳ 같은 버튼 다시 누름
+  봇 → [봇 안내]
+        이미 처리한 선택입니다: 클로드에게 대화로 묻기(읽기 전용). 다시 보내지 않았습니다.
+  부수효과: {'codex_messages': 0, 'claude_requests': 0, 'chat_jobs': [('claude', 'quota', 'DONE'), ('claude', 'chat', 'QUEUED')], 'focus': ['claude']}
+
+### 코덱스야 지금 쿼터 얼마나 남았어?  (수정 전: 코덱스 작업자에게 전달돼 "직접 조회할 수 없습니다" (10/16 08:21, 수정 전 코드))
+  봇 → [봇 안내 · 코덱스]
+        DeskMini Codex 사용 한도
+        • 주간: 43% 사용 · 57% 남음 · 초기화 10-23 20:32
+        
+        관측: 마지막 Codex 실행 10-20 20:32 기준 (요금제 prolite)
+        메인 PC Codex 도 같은 계정이면 한도를 함께 씁니다. 그 사용분은 다음 DeskMini 실행 때 반영됩니다.
+  부수효과: {'codex_messages': 0, 'claude_requests': 0, 'chat_jobs': [('claude', 'quota', 'DONE'), ('claude', 'chat', 'QUEUED')], 'focus': ['codex']}
+
+### APRIL-READ-01 승인 (알림 메시지에 답장)  (수정 전: 요청의 뜻이나 … 전달하지 않았습니다 (10/20 09:34, 코덱스 선택 4일 경과))
+  봇 → [봇 안내 · 코덱스]
+        마지막으로 코덱스를 고른 지 시간이 지났습니다. 이 문장을 코덱스 작업 지시로 보낼지, 대화로 물을지 정하지 못했습니다. 버튼으로 골라 주세요. 고르기 전에는 어디에도 보내지 않습니다.
+        버튼: 비서(봇)에게 묻기 | 코덱스 작업에 지시로 보내기 | 코덱스에게 대화로 묻기(읽기 전용)
+  부수효과: {'codex_messages': 1, 'claude_requests': 0, 'chat_jobs': [('claude', 'quota', 'DONE'), ('claude', 'chat', 'QUEUED')], 'focus': ['codex']}
+
+###   ↳ 버튼 「비서(봇)에게 묻기」 → 비서 대화층 호출 ('APRIL-READ-01 승인',)
+  부수효과: {'codex_messages': 1, 'claude_requests': 0, 'chat_jobs': [('claude', 'quota', 'DONE'), ('claude', 'chat', 'QUEUED')], 'focus': ['codex']}
+
+### 코덱스 한테 전달해  (수정 전: 요청의 뜻이나 … 전달하지 않았습니다 (10/20 09:35))
+  봇 → [봇 안내 · 코덱스]
+        이 문장을 코덱스 작업 지시로 보낼지, 대화로 물을지 정하지 못했습니다. 버튼으로 골라 주세요. 고르기 전에는 어디에도 보내지 않습니다.
+        버튼: 코덱스 작업에 지시로 보내기 | 코덱스에게 대화로 묻기(읽기 전용) | 비서(봇)에게 묻기
+  부수효과: {'codex_messages': 1, 'claude_requests': 0, 'chat_jobs': [('claude', 'quota', 'DONE'), ('claude', 'chat', 'QUEUED')], 'focus': ['codex']}
+
+###   ↳ 버튼 「코덱스 작업에 지시로 보내기」
+  봇 → [봇 안내 · 코덱스]
+        코덱스에 작업 요청을 접수했습니다. 처리 결과와 확인할 내용을 여기로 알려드리겠습니다.
+  부수효과: {'codex_messages': 2, 'claude_requests': 0, 'chat_jobs': [('claude', 'quota', 'DONE'), ('claude', 'chat', 'QUEUED')], 'focus': ['codex']}
+
+### 해제 승인해줘 코덱스  (수정 전: 요청의 뜻이나 … 전달하지 않았습니다 (10/20 11:16))
+  봇 → [봇 안내 · 코덱스]
+        이 문장을 코덱스 작업 지시로 보낼지, 대화로 물을지 정하지 못했습니다. 버튼으로 골라 주세요. 고르기 전에는 어디에도 보내지 않습니다.
+        버튼: 코덱스 작업에 지시로 보내기 | 코덱스에게 대화로 묻기(읽기 전용) | 비서(봇)에게 묻기
+  부수효과: {'codex_messages': 2, 'claude_requests': 0, 'chat_jobs': [('claude', 'quota', 'DONE'), ('claude', 'chat', 'QUEUED')], 'focus': ['codex']}
+
+### 해제 승인  (수정 전: 요청의 뜻이나 … 전달하지 않았습니다 (10/20 11:16))
+  봇 → [봇 안내 · 코덱스]
+        이 문장을 코덱스 작업 지시로 보낼지, 대화로 물을지 정하지 못했습니다. 버튼으로 골라 주세요. 고르기 전에는 어디에도 보내지 않습니다.
+        버튼: 코덱스 작업에 지시로 보내기 | 코덱스에게 대화로 묻기(읽기 전용) | 비서(봇)에게 묻기
+  부수효과: {'codex_messages': 2, 'claude_requests': 0, 'chat_jobs': [('claude', 'quota', 'DONE'), ('claude', 'chat', 'QUEUED')], 'focus': ['codex']}
+
+### 안녕 오늘 뭐 할까 (코덱스 선택 4일 경과)  (수정 전: 코덱스 읽기 전용 대화로 전달)
+  봇 → [봇 안내 · 코덱스]
+        답변을 준비하고 있습니다. 기존 작업과 미답 질문은 유지합니다.
+  봇 → (비서 대화층 호출: False)
+  부수효과: {'codex_messages': 2, 'claude_requests': 0, 'chat_jobs': [('claude', 'quota', 'DONE'), ('claude', 'chat', 'QUEUED'), ('codex', 'chat', 'QUEUED')], 'focus': ['codex']}
