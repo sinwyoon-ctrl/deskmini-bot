@@ -455,6 +455,11 @@ class FakeTelegram:
     def answer_callback(self, callback_id, text=""):
         self.answered.append(callback_id)
 
+    def edit_message_text(self, chat_id, message_id, text, reply_markup=None, parse_mode="HTML"):
+        self.__dict__.setdefault("edited", []).append(
+            {"chat_id": chat_id, "message_id": message_id, "text": text, "reply_markup": reply_markup})
+        return {"message_id": message_id}
+
     def send_file(self, chat_id, kind, filename, content, caption="", reply_markup=None):
         self.files.append({"kind": kind, "filename": filename, "content": content, "caption": caption})
         return {"message_id": 1}
