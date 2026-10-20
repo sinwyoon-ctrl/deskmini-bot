@@ -16,7 +16,7 @@
 | C 대화 중 “이거 해줘” → 작업 카드 | **기각(이번 회차)** | 봇 발주 경로에는 이미 있다(`create_task` 제안 → 🚀 착수 버튼 카드, README 「대화 응답층」). 코덱스/클로드 **세션**으로 넘기는 제안을 새로 열면 모델이 만든 지시문이 사람 한 번 탭으로 세션에 들어가는 새 쓰기 경로가 생긴다. 1차 되묻기 카드가 같은 자리를 사람 선택으로 이미 덮는다. 폰 확인 뒤 필요가 확인되면 다음 회차. |
 | E 실제 작업공간 연결 | **구현 안 함 · 스위치 존재 확인** | `config/orca.toml` `[projects.*] ownership_ready = false` 가 그 스위치다(`ionenet-web` 가 꺼진 상태로 등록돼 있음). 트레이더 읽기 전용 등록 초안은 `telegram-95-plan` 문서에 제안문으로만 적는다. CEO 결정 대기. |
 
-구현 순서: **A → D → B**(A·D 가 `app/bot.py` 를 서로 다른 구역에서 건드리므로 순서대로; B 는 A 의 테이블을 읽음).
+구현 순서: **A → D → B → F**(A·D 가 `app/bot.py` 를 서로 다른 구역에서 건드리므로 순서대로; B 는 A 의 테이블을 읽음; F(버튼 UI 통일, CEO 추가 요구)는 A·B 의 카드를 고치므로 마지막).
 
 ---
 
@@ -134,6 +134,118 @@ by: telegram
 - 시험 `tests/test_context_routing.py`(RoutingTests 재사용): 코덱스 선택·클로드 미답 질문·열린 카드·외부 승인 PENDING 1건을 만든 뒤 `build_snapshot` JSON 의 `telegram_routing` 에 각각 보이는지; 테이블 비어 있으면 빈 값·None; `external_approvals` 테이블 없음(스키마 없는 임시 DB)에도 예외 없음; 길이 ≤1,200.
 
 ---
+
+## F. 승인·선택 버튼 UI 통일 규칙 (CEO 추가 요구, 2026-10-20 저녁)
+
+원칙: **사람에게 결정을 받을 때는 항상 인라인 버튼이다.** 글자로 "승인"·"1번"을 치게 하지 않는다(글자 답은 보조 경로로만 남긴다). 봇이 보내는 모든 결정 카드는 아래 한 규칙을 따른다.
+
+### F-1. 카드 규칙
+
+```
+<보낸이 표시>                      ← 기존 관례 유지: [봇 안내 · 클로드] / [승인 요청 · ID] / [코덱스]
+1줄: 무엇을 결정하는지 (≤60자)      ← 필수
+2줄: 영향 — 돈 · 외부 전송 · 되돌림 가능 여부 ← 하나라도 있을 때만
+(본문: 근거·상세, 필요한 만큼. 선택 질문이면 "1) …  2) …  3) …" 번호 목록, 추천이 있으면 그 줄 끝에 ★ 와 이유 한 줄)
+마지막 줄: ⏳ 유효 시간 (예: 10분 안에 · 10/21 09:00 까지)
+버튼 1줄: 승인형 [✅ 승인] [⛔ 거절] (+필요시 [자세히])
+        선택형 [1] [2] [3] [4]  ·  짧은 이름이면 [1 · alpha] [2 · beta]  ·  추천은 [1 ★]
+        + 자유 답이 가능한 질문에는 [✏️ 직접 입력]
+```
+
+- 번호 버튼 배치: 5개 이하 한 줄. 6~8개는 두 줄(4+4). 9개 이상은 처음 7개 + `[더 보기 ▸]`(다음 쪽 7개 + `[◂ 이전]`).
+- "번호 · 짧은 이름" 형식 기준: 모든 선택지 이름이 8자 이하이고 한 줄 버튼 글자 합이 30자 이하일 때만. 아니면 번호만 쓰고 이름은 본문 번호 목록에 둔다.
+- `[✏️ 직접 입력]`: 누르면 "다음 답장을 이 질문의 답으로 받습니다(10분)" 안내 + `telegram_direct_inputs(chat_id, kind, key, expires_at, source)` 에 대기 기록. 10분 안의 다음 **텍스트 메시지**가 그 질문의 답으로 들어가고(기존 answer 경로 호출), 들어간 뒤 카드에 `✅ 직접 입력 · 시각` 표시. 만료되면 다음 메시지는 평소대로 처리. 슬래시 명령·버튼·첨부는 소비하지 않는다.
+- 다중 선택(F-2): 토글 `[☑ 1] [☐ 2] [☐ 3]` + `[완료]`. 토글 상태는 DB(해당 질문 행의 draft 컬럼)에 두고 `editMessageReplyMarkup` 으로 다시 그린다. `[완료]` 가 실제 전달이다.
+- **누른 뒤**: 원래 카드를 수정해 마지막 줄을 `✅ 승인됨 · 10/20 21:03 · 대표` / `⛔ 거절됨 · …` / `✅ 2번 선택 · …` / `✅ 직접 입력 대기 · …` 로 바꾸고 **버튼을 지운다**(`editMessageText`, 콜백의 `message.message_id` 사용). 수정이 실패하면(48시간 지난 메시지·전송 계층 미지원) 지금처럼 짧은 안내 메시지를 보낸다. 재탭·재배달은 "이미 처리됨 · 결과" 안내, 만료는 "⌛ 만료" 안내(F-2: 만료 시 카드도 수정).
+- **2단계 확인**: 돈이 들거나 되돌릴 수 없는 결정(외부 승인 헤더 `impact: money|irreversible`, 배포·push·운영 변경)은 `[✅ 승인]` → 카드가 `[정말 승인 — 되돌릴 수 없음] [취소]` 로 바뀌고 두 번째 탭이 실행이다. 기존 merge/push/deploy 일회용 승인과 트레이더 `[동작 검토]→[동작 확인]` 은 이미 2단계이므로 그대로 둔다.
+- 버튼 데이터는 64바이트 이하, 행 번호·키만 싣는다(기존 규칙). 카드 본문은 `redact_text` → `html.escape`.
+
+### F-2. 지금 글자 답장만 받는(또는 규칙과 다른) 경로 — 목록과 판단
+
+| 경로 | 지금 | 판단 |
+|---|---|---|
+| 외부 승인(A, `xa:`) | 버튼 2개, 탭 뒤 안내 메시지 | **F-1 적용**: 1줄·영향줄(`impact` 헤더)·탭 뒤 카드 수정·2단계(impact 가 money/irreversible) |
+| 되묻기 카드(1차, `ar:`) | 버튼 3개(긴 문구) | **F-1 적용**: 본문에 `1) 코덱스 작업에 지시로 2) 코덱스에게 대화로 3) 비서에게` 번호 목록, 버튼 `[1] [2] [3]`, 탭 뒤 `✅ 2번 선택` 수정 |
+| Codex 선택 질문(`cx:` requestUserInput, 질문 1개) | 선택지 이름이 버튼, 한 줄에 하나씩 최대 8개 | **F-1 적용**: 번호 목록 + 번호 버튼(짧으면 `1 · alpha`), `[✏️ 직접 입력]` 추가(자유형 답은 기존 `sessions.answer` 로), 탭 뒤 수정 |
+| Codex 선택 질문(질문 여러 개) | 답장에 "1. 답 / 2. 답" 글자 | 유지(복수 질문은 글자). 카드에 `[✏️ 직접 입력]` 만 붙여 다음 답장을 받는다 |
+| Codex 실행 승인(`cx:` accept/decline/cancel) | 버튼 3개 | **F-1 적용**: 1줄·영향줄(파일 변경/셸 실행/네트워크)·탭 뒤 수정. 문구 `[✅ 이번만 허용] [⛔ 허용 안 함] [⛔ 거절하고 중단]` |
+| Claude 실행 허용(`clp:`) | 버튼 2개 | **F-1 적용**: 영향줄(도구·실행 위치)·탭 뒤 수정 |
+| Claude native 질문(`orca_bridge` "질문 번호 … 답장") | 글자 답장만 | 선택지 형식이 없어 자유형 유지. `[✏️ 직접 입력]` 버튼만 추가(답장 대신 다음 메시지로 받기) |
+| `/orca reply`, "응/첫 번째로" 자연어 답 | 글자 | 보조 경로로 유지(버튼이 1순위) |
+| 작업 발주·merge/push/deploy·재시도(`approve:`) | 버튼, 탭 뒤 `_update_task_card` 로 카드 수정 | 이미 규칙에 가장 가까움. 문구만 `[✅ …]/[⛔ …]` 로 맞춤(선택) |
+| 트레이더(`ta:`) | 2단계 버튼 | 유지 |
+
+### F-3. 구현 범위
+
+**F-1 회차(이번)**: 공용 모듈 `app/cards.py` 신설 + `xa:`·`ar:`·`cx:`(단일 질문·실행 승인)·`clp:` 적용.
+- `app/cards.py`(순수 함수, I/O 없음 + `mark_decided` 하나):
+  - `approval_card(sender, title, *, impact=None, body='', expires=None) -> str` (HTML escape 포함)
+  - `approval_buttons(yes, no, *, detail=None) -> reply_markup` — `yes/no/detail` 는 `(라벨, callback_data)`
+  - `choice_card(sender, title, options, *, recommended=None, reason=None, impact=None, body='', expires=None) -> str` — options 는 라벨(·설명) 목록, 본문에 `1) …` 번호 목록 생성
+  - `choice_buttons(count, callback, *, labels=None, recommended=None, other=None, page=0) -> reply_markup` — 위 배치 규칙(5/8/페이지, 짧은 이름 기준, ★, `[✏️ 직접 입력]`=`other`)
+  - `verdict_line(kind, when, who='대표') -> str` 와 `decided_text(original_html, verdict) -> str`(마지막 줄 교체 또는 추가)
+  - `mark_decided(bot, message, verdict)`: `message` 는 콜백의 `query['message']`; `bot.telegram.edit_message_text(chat_id, message_id, decided_text(message['text'], verdict), reply_markup=None)` 를 try 하고 실패(`TelegramError`, `AttributeError`, message 없음)면 `bot._send(verdict)` 로 대체. 반환값 `'edited'|'sent'`.
+- `app/bot.py::_handle_callback`: 각 핸들러에 `message=query.get('message')` 를 키워드로 넘긴다(핸들러 시그니처에 `message=None` 추가, 기존 위치 인자 호환).
+- `app/external_approvals.py`: `_card` → `cards.approval_card`, `_buttons` → `cards.approval_buttons`; 헤더 `impact` 지원(`none|external|money|irreversible`, 기본 none; 영향줄 문구: external=“외부 전송 있음”, money=“비용 발생”, irreversible=“되돌릴 수 없음”); money/irreversible 는 2단계(첫 탭 → `xa:<rowid>:a2` 확인 버튼과 `[취소]`, 두 번째 탭이 기록); 탭 뒤 `mark_decided`.
+- `app/agent_routing.py`: 되묻기 카드를 `choice_card/choice_buttons` 로(번호 목록·`[1] [2] [3]`, callback 은 기존 `ar:<rowid>:<key>` 유지 — 번호↔key 는 plan 의 `order` 로 매핑), `handle_callback` 끝에 `mark_decided`.
+- `app/codex_bridge.py::question`: 단일 질문 선택지는 `choice_card/choice_buttons`(callback `cx:<key>:<i+1>` 유지) + `[✏️ 직접 입력]`(`cx:<key>:free`); 실행 승인은 `approval_card` + 세 버튼. `app/codex_session.py::handle_callback`: `free` 는 `telegram_direct_inputs` 에 대기 기록 + 안내; 다른 답은 기존 처리 + `mark_decided`.
+- `app/claude_permissions.py`: 카드 `approval_card`(영향줄: 도구·실행 위치), `decide` 끝에 `mark_decided`.
+- `app/bot.py::_handle_message`: 첨부·빈 텍스트 검사 뒤 **외부 승인보다 먼저** `direct_inputs.consume(bot, message, update_id)` — 만료되지 않은 대기가 있으면 이 텍스트를 그 질문의 답으로 보내고(기존 `sessions.answer` / `queue.answer`), 카드 수정은 `mark_decided`(message_id 를 대기 행에 저장) 후 True. 슬래시 명령은 소비하지 않는다.
+- 스키마: `CREATE TABLE IF NOT EXISTS telegram_direct_inputs (chat_id INTEGER NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, message_id INTEGER, expires_at TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(chat_id));` — 채팅당 하나만(새 대기가 이전 대기를 덮어쓴다).
+- 시험 파일 `tests/test_cards.py`(순수: 배치 5/8/9개·짧은 이름 기준·★·other·decided_text), `tests/test_cards_integration.py`(BotFixture: xa/ar/cx/clp 각 카드의 1줄·버튼 문구·탭 뒤 `edit_message_text` 호출 1회와 버튼 제거, FakeTelegram 에 `edit_message_text` 기록 메서드 추가 — `tests/test_watch.py:FakeTelegram` 수정은 **이 메서드 추가만** 허용; 직접 입력: 버튼→다음 텍스트가 답으로 전달·만료 뒤 미소비·슬래시 미소비; 2단계 승인: 첫 탭은 기록 없음, 두 번째 탭이 기록).
+- 금지: 콜백 데이터에 경로·본문 싣기 금지. 모델 응답으로 버튼을 만들지 않는다(선택지는 코드가 받은 options 만). 자동 실행 없음 — 모든 전달은 탭 또는 직접 입력 소비 때만. 기존 글자 답장 경로(질문 카드 답장·`/orca reply`)는 지우지 않는다. `_update_task_card`·트레이더 카드는 건드리지 않는다.
+
+**F-2 회차(다음)**: 다중 선택 토글+[완료], 9개 이상 페이지, 만료 시 카드 수정(outbox 전송 결과의 message_id 보존 테이블 필요), 작업 발주 카드 문구 정렬.
+
+### F-4. 휴대폰 화면 예시 (텍스트 목업)
+
+외부 승인 요청(일반):
+```
+[승인 요청 · APRIL-READ-01]
+추가 브라우저 조사(Production Read-only) 진행 승인
+영향: 외부 전송 없음 · 되돌릴 수 있음
+요청: claude@main-pc
+가상 마이크 설치와 자동 음성 입력 독립 테스트는 성공했습니다. 추가 조사는 …
+⏳ 10/21 18:30 까지
+[ ✅ 승인 ]  [ ⛔ 거절 ]
+```
+탭 뒤(버튼 사라짐):
+```
+[승인 요청 · APRIL-READ-01]
+추가 브라우저 조사(Production Read-only) 진행 승인
+…
+✅ 승인됨 · 10/20 21:03 · 대표 → approvals/APRIL-READ-01.decision.md
+```
+돈·되돌림 불가(2단계):
+```
+[승인 요청 · PAY-0042]
+광고 집행 예산 30만 원 결제 승인
+영향: 비용 발생 · 되돌릴 수 없음
+…
+[ ✅ 승인 ]  [ ⛔ 거절 ]            → 탭 →   [ 정말 승인 — 되돌릴 수 없음 ]  [ 취소 ]
+```
+선택 질문(Codex requestUserInput, 짧은 이름):
+```
+[코덱스] 연결시험
+시험 파일 이름을 고르세요
+1) alpha ★ — 기존 문서와 이름 규칙이 같음
+2) beta
+3) gamma
+⏳ 10분 안에
+[ 1 ★ · alpha ]  [ 2 · beta ]  [ 3 · gamma ]  [ ✏️ 직접 입력 ]
+```
+선택 질문(이름이 길 때) 와 되묻기 카드:
+```
+[봇 안내 · 코덱스]
+이 문장을 어디로 보낼까요 — "해제 승인해줘"
+1) 코덱스 작업에 지시로 보내기
+2) 코덱스에게 대화로 묻기(읽기 전용)
+3) 비서(봇)에게 묻기
+고르기 전에는 어디에도 보내지 않습니다 · ⏳ 24시간
+[ 1 ]  [ 2 ]  [ 3 ]
+```
+탭 뒤: 마지막 줄이 `✅ 2번 선택 · 10/20 21:05` 로 바뀌고 버튼 없음.
+다중 선택(F-2): `[ ☑ 1 ]  [ ☐ 2 ]  [ ☑ 3 ]  [ 완료 ]`.
 
 ## 검토 기준 (Fable)
 
