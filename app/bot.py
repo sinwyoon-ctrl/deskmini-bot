@@ -318,10 +318,9 @@ class ChiefBot:
             self._send("텍스트, 사진, 문서(pdf·txt·md·csv·json)만 처리할 수 있습니다.")
             return
         command = text.strip().split(maxsplit=1)[0].split("@", 1)[0].lower()
-        if not text.lstrip().startswith("/"):
-            from app.direct_inputs import consume as direct_input
-            if direct_input(self, message, update_id):
-                return
+        from app.direct_inputs import consume as direct_input
+        if direct_input(self, message, update_id):
+            return
         from app.external_approvals import handle_message as approval_message
         if approval_message(self, message, update_id):
             return

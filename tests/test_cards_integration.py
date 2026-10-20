@@ -277,7 +277,16 @@ class CodexCardTests(Tap, BotFixture):
         self.tap('cx:%s:free' % qid, card['text'], 9102)
         self.bot._handle_update(self.message('/status', 9104))
         with self.bot.store.connect() as db:
-            self.assertEqual(db.execute('SELECT COUNT(*) FROM telegram_direct_inputs').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT state FROM codex_questions WHERE id=?', (qid,)).fetchone()[0], 'PENDING')
+
+    def test_slash_command_cancels_wait_and_next_text_is_not_the_answer(self):
+        card, qid = self.ask(questions=self.single())
+        self.tap('cx:%s:free' % qid, card['text'], 9102)
+        self.bot._handle_update(self.message('/status', 9104))
+        with self.bot.store.connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM telegram_direct_inputs').fetchone()[0], 0)
+        self.bot._handle_update(self.message('안녕', 9105))
+        with self.bot.store.connect() as db:
             self.assertEqual(db.execute('SELECT state FROM codex_questions WHERE id=?', (qid,)).fetchone()[0], 'PENDING')
 
     def test_expired_wait_is_not_consumed_and_text_goes_the_normal_way(self):

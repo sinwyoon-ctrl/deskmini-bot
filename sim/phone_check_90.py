@@ -11,6 +11,7 @@ The printed transcript is what the phone should show after the fable/telegram-90
 """
 from __future__ import annotations
 
+import re
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -73,7 +74,11 @@ class Replay:
 
     def press(self, part):
         cards = [i for i, item in enumerate(self.f.tg.sent) if item.get('reply_markup')]
-        data = [d for t, d in self.f.buttons(cards[-1]) if part in t][0]
+        numbers = [l.split(')')[0] for l in self.f.tg.sent[cards[-1]]['text'].split('\n') if re.match(r'^\d\)', l) and part in l]
+        assert len(numbers) == 1, self.f.tg.sent[cards[-1]]['text']
+        data = [d for t, d in self.f.buttons(cards[-1]) if t.split()[0] == numbers[0]]
+        assert len(data) == 1, self.f.buttons(cards[-1])
+        data = data[0]
         self.f.number += 1
         self.f.press(data, update_id=self.f.number + 500)
 

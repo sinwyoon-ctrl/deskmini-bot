@@ -1,6 +1,6 @@
 """[✏️ 직접 입력]: the next plain text message becomes the answer to one waiting question (spec F-1).
 
-One waiting record per chat (a new one replaces the old). Slash commands, buttons and attachments never consume it,
+One waiting record per chat (a new one replaces the old). Slash commands cancel it; buttons and attachments never consume it,
 and it expires after ten minutes, after which the next message is handled as usual.
 """
 from __future__ import annotations
@@ -39,7 +39,12 @@ def pending(bot):
 def consume(bot, message, update_id):
     """True when this text message was taken as the waiting answer."""
     text = (message.get('text') or '').strip()
-    if not text or text.startswith('/'):
+    if not text:
+        return False
+    if text.startswith('/'):
+        # A command cancels the wait (as the notice promises) and is then processed normally.
+        with bot.store.transaction() as db:
+            db.execute('DELETE FROM telegram_direct_inputs WHERE chat_id=?', (bot.settings.allowed_chat_id,))
         return False
     row = pending(bot)
     if not row:
