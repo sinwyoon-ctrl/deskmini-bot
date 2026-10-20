@@ -78,6 +78,7 @@ from app.inbox import (
     text_preview,
 )
 from app.policy import Decision, Policy
+from app.polling import PollingHealth
 from app.release import ReleaseError, ReleaseManager, ReleaseRefused
 from app.retry import RETRY_MARGIN, parse_reset_time, reset_pending, scheduled_time
 from app.runner import RunnerError, TaskRunner
@@ -161,6 +162,7 @@ class ChiefBot:
         self.job_scanner: Callable[[datetime], list[JobObservation]] = self._scan_jobs
         self.observer: Callable[[datetime], Observation] = self.observe
         self.last_watch_monotonic: float | None = None
+        self.polling = PollingHealth()
 
     def run(self) -> None:
         me = self.telegram.get_me()
@@ -187,9 +189,18 @@ class ChiefBot:
                 poll_timeout = min(self.settings.telegram_timeout_seconds, 2) if codex_config(self.settings.root).get('enabled') else self.settings.telegram_timeout_seconds
                 updates = self.telegram.get_updates(offset, poll_timeout)
             except TelegramError as exc:
-                LOG.warning("Telegram polling failed: %s", redact_text(str(exc), 500))
-                time.sleep(min(exc.retry_after or 3, 30))
+                level, delay = self.polling.failure(exc)
+                LOG.log(
+                    logging.INFO if level == "info" else logging.WARNING,
+                    "Telegram polling failed (%d consecutive): %s",
+                    self.polling.failures,
+                    redact_text(str(exc), 500),
+                )
+                time.sleep(delay)
                 continue
+            note = self.polling.success()
+            if note:
+                LOG.info(note)
             for update in updates:
                 self._handle_update(update)
 
