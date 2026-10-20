@@ -318,6 +318,10 @@ class ChiefBot:
             self._send("텍스트, 사진, 문서(pdf·txt·md·csv·json)만 처리할 수 있습니다.")
             return
         command = text.strip().split(maxsplit=1)[0].split("@", 1)[0].lower()
+        if not text.lstrip().startswith("/"):
+            from app.direct_inputs import consume as direct_input
+            if direct_input(self, message, update_id):
+                return
         from app.external_approvals import handle_message as approval_message
         if approval_message(self, message, update_id):
             return
@@ -804,19 +808,19 @@ class ChiefBot:
             return
         if data.startswith("clp:"):
             from app.claude_permissions import decide
-            decide(self, data)
+            decide(self, data, message=query.get("message"))
             return
         if data.startswith("cx:"):
             from app.codex_session import handle_callback as codex_callback
-            codex_callback(self, data)
+            codex_callback(self, data, message=query.get("message"))
             return
         if data.startswith("xa:"):
             from app.external_approvals import handle_callback as approval_callback
-            approval_callback(self, data)
+            approval_callback(self, data, message=query.get("message"))
             return
         if data.startswith("ar:"):
             from app.agent_routing import handle_callback as route_callback
-            route_callback(self, data)
+            route_callback(self, data, message=query.get("message"))
             return
         if data.startswith("approve:"):
             _, action, approval_id = data.split(":", 2)

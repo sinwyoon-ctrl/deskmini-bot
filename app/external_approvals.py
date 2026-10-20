@@ -14,10 +14,9 @@ import time
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
-from adapters.telegram import inline_keyboard
+from app import cards
 from app.redact import redact_text
 from app.state import utc_now
-from app.telegram_copy import local_time
 
 ID_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}'
 ID_RE = re.compile('^'+ID_PATTERN+'$')
@@ -86,15 +85,29 @@ def read_decision(directory, approval_id):
     return (header or {}).get('decision') or 'unknown'
 
 
+IMPACTS = {'none', 'external', 'money', 'irreversible'}
+CONFIRM_LABEL = {'money': '정말 승인 — 비용 발생', 'irreversible': '정말 승인 — 되돌릴 수 없음'}
+
+
+def _impact(header):
+    value = (header.get('impact') or 'none').strip().lower()
+    return value if value in IMPACTS else 'none'
+
+
 def _buttons(rowid):
-    return inline_keyboard([[('✅ 승인','xa:%d:a'%rowid),('⛔ 거절','xa:%d:r'%rowid)]])
+    return cards.approval_buttons(('✅ 승인','xa:%d:a'%rowid),('⛔ 거절','xa:%d:r'%rowid))
 
 
-def _card(approval_id, requester, summary, body, expires_at):
-    text = ('[승인 요청 · '+approval_id+']\n요청: '+(requester or '확인 필요')+'\n요약: '+redact_text(summary or '',500)
-            +'\n\n'+redact_text(body or '',800)+'\n\n유효: '+local_time(expires_at)
-            +' · 결정은 agent-hub approvals/'+approval_id+'.decision.md 에 기록됩니다')
-    return html.escape(redact_text(text,4000))
+def _confirm_buttons(rowid, impact):
+    return cards.approval_buttons((CONFIRM_LABEL.get(impact,'정말 승인'),'xa:%d:a2'%rowid),('취소','xa:%d:c'%rowid))
+
+
+def _card(approval_id, requester, summary, body, expires_at, impact='none'):
+    text = cards.approval_card('[승인 요청 · '+approval_id+']',redact_text(summary or '',500) or '승인 요청',impact=impact,
+                               body='요청: '+(requester or '확인 필요')+'\n'+redact_text(body or '',800)
+                                    +'\n결정은 agent-hub approvals/'+approval_id+'.decision.md 에 기록됩니다',
+                               expires=cards.stamp(expires_at)+' 까지')
+    return text
 
 
 def _notice(bot, text):
@@ -142,12 +155,12 @@ def scan(bot):
         existing = read_decision(directory,approval_id)
         state = 'DECIDED_EXTERNAL' if existing else 'PENDING'
         with bot.store.transaction() as db:
-            db.execute('INSERT OR IGNORE INTO external_approvals(id,path,requester,summary,created_at,expires_at,state,decision,seen_at) VALUES(?,?,?,?,?,?,?,?,?)',
+            db.execute('INSERT OR IGNORE INTO external_approvals(id,path,requester,summary,created_at,expires_at,state,decision,seen_at,impact) VALUES(?,?,?,?,?,?,?,?,?,?)',
                        (approval_id,name,redact_text(header.get('from',''),200),redact_text(header.get('summary',''),500),
-                        created.isoformat(timespec='seconds'),expires.isoformat(timespec='seconds'),state,existing,utc_now()))
+                        created.isoformat(timespec='seconds'),expires.isoformat(timespec='seconds'),state,existing,utc_now(),_impact(header)))
             row = db.execute('SELECT rowid AS rid FROM external_approvals WHERE id=?',(approval_id,)).fetchone()
         if state=='PENDING' and expires>now:
-            bot._notify('xapproval:'+approval_id,_card(approval_id,header.get('from',''),header.get('summary',''),body,expires.isoformat(timespec='seconds')),
+            bot._notify('xapproval:'+approval_id,_card(approval_id,header.get('from',''),header.get('summary',''),body,expires.isoformat(timespec='seconds'),_impact(header)),
                         reply_markup=_buttons(row['rid']))
     _expire(bot,directory,now)
 
@@ -172,9 +185,14 @@ def _expire(bot, directory, now):
             bot._notify('xapproval-expired:'+approval_id,html.escape('[봇 안내] 승인 요청 '+approval_id+' 유효시간 지남 → expired 기록'))
 
 
-def handle_callback(bot, data):
+def _settle(bot, message, verdict, notice):
+    """Edit the tapped card to ``verdict`` (buttons removed); send ``notice`` when the card cannot be edited."""
+    return cards.mark_decided(bot,message,verdict,fallback=notice,prefix='[봇 안내] ')
+
+
+def handle_callback(bot, data, message=None):
     parts = data.split(':')
-    if len(parts)!=3 or not parts[1].isdigit() or parts[2] not in {'a','r'}:
+    if len(parts)!=3 or not parts[1].isdigit() or parts[2] not in {'a','r','a2','c'}:
         return
     rowid,choice = int(parts[1]),parts[2]
     directory = approvals_dir(bot)
@@ -185,7 +203,8 @@ def handle_callback(bot, data):
         _notice(bot,'이 승인 카드의 요청을 찾지 못했습니다');return
     approval_id = row['id']
     if row['state']!='PENDING':
-        _notice(bot,'이미 처리된 승인 요청입니다: '+approval_id+' · '+(row['decision'] or row['state']));return
+        result = row['decision'] or row['state']
+        _settle(bot,message,'이미 처리됨 · '+result,'이미 처리된 승인 요청입니다: '+approval_id+' · '+result);return
     if (_parse_time(row['expires_at']) or now)<=now:
         try:
             write_decision(directory,approval_id,'expired',now)
@@ -194,13 +213,26 @@ def handle_callback(bot, data):
         with bot.store.transaction() as db:
             db.execute("UPDATE external_approvals SET state='EXPIRED',decision='expired',decided_at=?,decided_source='telegram:callback' WHERE id=? AND state='PENDING'",
                        (now.isoformat(timespec='seconds'),approval_id))
-        _notice(bot,'유효시간이 지나 승인하지 않았습니다');return
+        _settle(bot,message,cards.verdict_line('expired',now,None),'유효시간이 지나 승인하지 않았습니다');return
     other = read_decision(directory,approval_id)
     if other:
         with bot.store.transaction() as db:
             db.execute("UPDATE external_approvals SET state='DECIDED_EXTERNAL',decision=? WHERE id=? AND state='PENDING'",(other,approval_id))
-        _notice(bot,'이미 처리된 승인 요청입니다: '+approval_id+' · '+other);return
-    decision = 'approved' if choice=='a' else 'rejected'
+        _settle(bot,message,'이미 처리됨 · '+other,'이미 처리된 승인 요청입니다: '+approval_id+' · '+other);return
+    impact = row['impact'] if 'impact' in row.keys() and row['impact'] else 'none'
+    if choice=='c':
+        original = message.get('text') if isinstance(message,dict) else None
+        if not (isinstance(original,str) and cards.edit_card(bot,message,html.escape(original),_buttons(rowid))):
+            _notice(bot,'취소했습니다. 승인 요청 '+approval_id+' 는 아직 대기 중이며 위 카드의 버튼으로 결정할 수 있습니다.')
+        return
+    if choice=='a' and cards.needs_two_step(impact):
+        # First tap of a money / irreversible approval records nothing; the second button does.
+        original = message.get('text') if isinstance(message,dict) else None
+        markup = _confirm_buttons(rowid,impact)
+        if not (isinstance(original,str) and cards.edit_card(bot,message,html.escape(original),markup)):
+            bot._send(html.escape('[승인 요청 · '+approval_id+']\n'+(cards.impact_line(impact) or '')+'\n정말 승인할까요? 아직 아무것도 기록하지 않았습니다.'),reply_markup=markup)
+        return
+    decision = 'approved' if choice in {'a','a2'} else 'rejected'
     try:
         write_decision(directory,approval_id,decision,now)
     except OSError:
@@ -208,7 +240,8 @@ def handle_callback(bot, data):
     with bot.store.transaction() as db:
         db.execute("UPDATE external_approvals SET state='DECIDED',decision=?,decided_at=?,decided_source='telegram:callback' WHERE id=? AND state='PENDING'",
                    (decision,now.isoformat(timespec='seconds'),approval_id))
-    _notice(bot,'승인 요청 '+approval_id+' 를 '+LABELS[decision]+'했습니다. approvals/'+approval_id+'.decision.md 에 기록했고 요청한 쪽이 읽어 진행합니다(hub 동기화 최대 15분).')
+    _settle(bot,message,cards.verdict_line(decision,now)+' → approvals/'+approval_id+'.decision.md',
+            '승인 요청 '+approval_id+' 를 '+LABELS[decision]+'했습니다. approvals/'+approval_id+'.decision.md 에 기록했고 요청한 쪽이 읽어 진행합니다(hub 동기화 최대 15분).')
 
 
 def handle_message(bot, message, update_id):

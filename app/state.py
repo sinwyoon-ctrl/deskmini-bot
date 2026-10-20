@@ -92,6 +92,12 @@ class StateStore:
             connection.execute("ALTER TABLE inbox ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
         if "last_error" not in inbox_columns:
             connection.execute("ALTER TABLE inbox ADD COLUMN last_error TEXT")
+        external_columns = {row[1] for row in connection.execute("PRAGMA table_info(external_approvals)")}
+        if "impact" not in external_columns:
+            connection.execute("ALTER TABLE external_approvals ADD COLUMN impact TEXT NOT NULL DEFAULT 'none'")
+        direct_columns = {row[1] for row in connection.execute("PRAGMA table_info(telegram_direct_inputs)")}
+        if "card_text" not in direct_columns:
+            connection.execute("ALTER TABLE telegram_direct_inputs ADD COLUMN card_text TEXT")
         approval_columns = {row[1] for row in connection.execute("PRAGMA table_info(approvals)")}
         for column in ("outcome", "outcome_at", "outcome_note"):
             if column not in approval_columns:

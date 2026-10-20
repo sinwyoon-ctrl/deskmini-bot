@@ -322,3 +322,8 @@ CREATE TABLE IF NOT EXISTS external_approvals (
     created_at TEXT NOT NULL, expires_at TEXT NOT NULL, state TEXT NOT NULL,
     decision TEXT, decided_at TEXT, decided_source TEXT, seen_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS telegram_direct_inputs (
+    chat_id INTEGER NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, message_id INTEGER,
+    expires_at TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL, card_text TEXT,
+    PRIMARY KEY(chat_id)
+);
