@@ -4,7 +4,7 @@ import sqlite3
 import unittest
 
 import test_agent_routing as routing
-from app.context import ROUTING_LIMIT, WorkspacePaths, build_snapshot, routing_summary
+from app.context import ROUTING_LIMIT, WorkspacePaths, build_snapshot, routing_summary, routing_text
 
 
 class ContextRoutingTests(unittest.TestCase):
@@ -65,6 +65,39 @@ class ContextRoutingTests(unittest.TestCase):
         before = self.f.rows('SELECT COUNT(*) n FROM telegram_agent_inputs')
         routing_summary(self.f.bot.store)
         self.assertEqual(self.f.rows('SELECT COUNT(*) n FROM telegram_agent_inputs'), before)
+
+    def test_routing_text_empty_state(self):
+        text = routing_text(self.f.bot.store)
+        self.assertIn('지금 고른 모델: 없음 — 비서가 답합니다', text)
+        self.assertIn('답 기다리는 질문: 코덱스 0 · 클로드 0', text)
+        self.assertNotIn('열린 선택 카드', text)
+        self.assertNotIn('외부 승인', text)
+        self.assertIn('/assistant', text)
+
+    def test_routing_text_lists_connection_label_and_approval_ids(self):
+        row = self.f.claude()
+        self.f.question(row)
+        for n in (1, 2):
+            self.sql("INSERT INTO external_approvals(id,path,requester,summary,created_at,expires_at,state,seen_at) VALUES(?,?,?,?,?,?,?,?)",
+                     (f'APR-{n}', f'{n}.md', 'm', 's', f'2026-10-20T10:0{n}:00', '2026-10-21T10:00:00', 'PENDING', 'x'))
+        text = routing_text(self.f.bot.store, None, {'projects': {'bot-claude': {'label': '봇 클로드'}}})
+        self.assertIn('지금 고른 모델: 클로드', text)
+        self.assertIn('클로드 연결: 봇 클로드 · ', text)
+        self.assertIn('클로드 1', text)
+        self.assertIn('대기 중 외부 승인: ', text)
+        self.assertIn('APR-1', text)
+        self.assertIn('APR-2', text)
+        self.assertNotIn('100', text.replace('1,000', ''))
+
+    def test_routing_text_unconfirmed_and_length(self):
+        class Broken:
+            def connect(self_inner):
+                raise sqlite3.OperationalError('x')
+        self.assertEqual(routing_text(Broken()), '라우팅 상태를 확인하지 못했습니다.')
+        for i in range(8):
+            self.sql("INSERT INTO external_approvals(id,path,requester,summary,created_at,expires_at,state,seen_at) VALUES(?,?,?,?,?,?,?,?)",
+                     (f'A{i}', f'{i}.md', 'm', '가' * 400, f'2026-10-20T10:0{i}:00', '2026-10-21T10:00:00', 'PENDING', 'x'))
+        self.assertLessEqual(len(routing_text(self.f.bot.store)), 1000)
 
 
 class NoSchemaTests(unittest.TestCase):

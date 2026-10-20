@@ -30,7 +30,8 @@ class SemanticFixture(unittest.TestCase):
                 'secondary':None,'plan_type':'test','limit_reached':None,'observed_at':datetime.now(UTC)}
         p=patch('app.bot.latest_codex_limits',return_value=limits);p.start();self.addCleanup(p.stop)
 
-    def answer(self,intent):
+    def answer(self,intent,**kw):
+        if kw:return patch.object(self.f.bot.chat.claude,'complete',**kw)
         return patch.object(self.f.bot.chat.claude,'complete',return_value=SimpleNamespace(data={'intent':intent},model='tested-model',usage={}))
 
     def last(self):
@@ -302,6 +303,87 @@ class InterpretTests(SemanticFixture):
         with patch.object(self.f.bot.chat.claude,'complete',side_effect=RuntimeError('down')):
             self.assertEqual(interpret(self.f.bot,'README 수정해줘','claude',False),'blocked')
             self.assertEqual(interpret(self.f.bot,'안녕','claude',False),'conversation')
+
+
+class NameOnlyTests(SemanticFixture):
+    """Spec G-1: a bare name selects the model without any API call."""
+
+    def check(self,text,agent,**kw):
+        with self.answer('work',**kw) as call:
+            self.f.say(text)
+        call.assert_not_called()
+        self.assertEqual(self.f.active(),agent)
+        self.assertIn('바꿨습니다',self.last())
+        self.assertNotIn('전달하지 않았습니다',self.last())
+        self.assertEqual(self.jobs(),[])
+
+    def test_bare_names_select_without_api(self):
+        self.check('클로드야','claude')
+        self.check('코덱스야','codex')
+
+    def test_selection_survives_a_dead_api(self):
+        self.check('클로드야','claude',side_effect=RuntimeError('down'))
+        self.assertEqual(self.f.rows("SELECT * FROM events WHERE event_type LIKE 'AGENT_ROUTE_INTERPRETATION%'"),[])
+
+    def test_confirmation_wording_depends_on_target(self):
+        self.check('클로드야','claude')
+        self.assertIn('프로젝트와 할 일',self.last())
+        with self.answer('work'):
+            self.f.claude()
+        self.check('클로드야','claude')
+        self.assertIn('이전 작업으로 다음 지시',self.last())
+
+    def test_interpret_blank_body_is_ambiguous_without_event(self):
+        with self.answer('work') as call:
+            self.assertEqual(interpret(self.f.bot,'   ','claude'),'ambiguous')
+        call.assert_not_called()
+        self.assertEqual(self.f.rows("SELECT * FROM events WHERE event_type LIKE 'AGENT_ROUTE_INTERPRETATION%'"),[])
+
+
+class RoutingStatusTests(SemanticFixture):
+    """Spec G-2: routing-state questions are answered by the bot from routing_summary, not as a task status."""
+    QUESTION='지금 어떤 모델 골라져 있고 답 기다리는 질문 있어?'
+
+    def test_real_sentence_reports_selection_and_pending_question(self):
+        with self.answer('work'):
+            row=self.f.claude()
+        self.f.question(row)
+        self.select_codex()
+        with self.answer('status') as call:
+            self.f.say(self.QUESTION)
+        call.assert_not_called()
+        text=self.last()
+        self.assertIn('[봇 안내]',text)
+        self.assertNotIn('[봇 안내 · ',text)
+        self.assertIn('지금 고른 모델: 코덱스',text)
+        self.assertIn('클로드 1',text)
+        self.assertNotIn('지금 대화하는 작업',text)
+        self.assertEqual(self.f.rows("SELECT state FROM orca_questions")[0]['state'],'PENDING')
+
+    def test_answers_without_any_selection_and_without_assistant(self):
+        with patch.object(self.f.bot,'_chat_reply') as chat, self.answer('status') as call:
+            self.f.say(self.QUESTION)
+        chat.assert_not_called();call.assert_not_called()
+        self.assertIn('[봇 안내]',self.last())
+        self.assertIn('지금 고른 모델: 없음',self.last())
+
+    def test_named_routing_question_also_selects(self):
+        with self.answer('status') as call:
+            self.f.say('클로드야 지금 어떤 모델이야')
+        call.assert_not_called()
+        self.assertEqual(self.f.active(),'claude')
+        self.assertIn('지금 고른 모델: 클로드',self.last())
+
+    def test_work_sentence_is_not_a_routing_question(self):
+        with self.answer('work'):
+            self.f.say('클로드야 모델 선택 기능 코드 고쳐줘')
+        self.assertNotIn('지금 고른 모델',self.last())
+
+    def test_task_progress_question_keeps_status_card(self):
+        self.select_codex()
+        with self.answer('status'):
+            self.f.say('지금 어디까지 했어?')
+        self.assertNotIn('지금 고른 모델',self.last())
 
 
 if __name__=='__main__':

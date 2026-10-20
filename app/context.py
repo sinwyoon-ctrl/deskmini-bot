@@ -329,6 +329,38 @@ def routing_summary(store: Any) -> Any:
     return clean()
 
 
+def routing_text(store: Any, codex_config: Any = None, orca_config: Any = None) -> str:
+    """routing_summary 를 한국어 안내문으로 옮긴다(결정적, 모델 호출 없음). 1,000자 이내."""
+    summary = routing_summary(store)
+    if not isinstance(summary, dict):
+        return "라우팅 상태를 확인하지 못했습니다."
+    from app.telegram_copy import project_name
+
+    names = {"claude": "클로드", "codex": "코덱스"}
+    configs = {"claude": orca_config, "codex": codex_config}
+    selected = summary.get("selected_agent")
+    lines = ["지금 고른 모델: " + (names.get(selected, str(selected)) if selected else "없음 — 비서가 답합니다")]
+    targets = summary.get("targets") or {}
+    for agent in ("claude", "codex"):
+        info = targets.get(agent)
+        if not isinstance(info, dict) or not info.get("project"):
+            continue
+        config = configs[agent]
+        project = str(info["project"])
+        label = project_name(config, project) if isinstance(config, dict) else project
+        lines.append(f"{names[agent]} 연결: {label} · {info.get('state') or '확인 안 됨'}")
+    pending = summary.get("pending_questions") or {}
+    lines.append(f"답 기다리는 질문: 코덱스 {int(pending.get('codex') or 0)} · 클로드 {int(pending.get('claude') or 0)}")
+    cards = summary.get("open_ask_cards") or []
+    if cards:
+        lines.append(f"열린 선택 카드: {len(cards)}건")
+    ids = [str(a.get("id")) for a in summary.get("external_approvals_pending") or [] if isinstance(a, dict) and a.get("id")]
+    if ids:
+        lines.append("대기 중 외부 승인: " + ", ".join(ids))
+    lines.append('모델을 바꾸려면 "클로드야"/"코덱스야", 비서로 돌아가려면 /assistant')
+    return redact_text("\n".join(lines), 1000)
+
+
 def jobs_summary(paths: WorkspacePaths, count: int = 6) -> list[dict[str, Any]]:
     """장시간 작업(렌더 폴더) 최근 상태. 마커 파일로만 추정한 값이다."""
     try:

@@ -23,6 +23,7 @@ PROMPT=('한국어 텔레그램 메시지의 전달 의도만 분류하세요. �
 
 
 def interpret(bot,body,agent,pending_question=False,source=None,question_context=None):
+    if not body.strip():return 'ambiguous'
     lexical=classify(body)
     # These authoritative read/control cases do not need an extra model call.
     if lexical in {'quota','status'} or (lexical=='ambiguous' and re.search(r'쿼터|한도|quota|usage',body,re.I)):

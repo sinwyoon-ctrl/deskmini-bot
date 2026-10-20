@@ -23,6 +23,8 @@ ADDRESS = re.compile(r'^(코덱스|codex|클로드|claude)\s?(?:야|아|으로|�
 # "… 해줘 코덱스": a trailing vocative selects the model as well.
 TRAILING = re.compile(r'^(.*\S)[\s,，]+(코덱스|codex|클로드|claude)(?:야|아|한테|에게)?\s*[.!?。！？~]*$',re.I|re.S)
 TAKEOVER = re.compile(r'^(코덱스|codex|클로드|claude)(?:가|이)\s*(?:대화(?:를)?\s*)?넘겨받아(?:서)?[\s,.]*(.*)$',re.I|re.S)
+CHOOSE_WORDS = {'선택','선택해','선택해줘','연결','연결해','연결해줘'}
+ROUTING_QUERY = re.compile(r'(?:어떤|무슨|어느|누구|뭐)\s*모델|모델(?:이|은|을)?\s*(?:골라|선택|잡혀|연결)|골라져|선택(?:돼|되어|된)\s*(?:있|거)|(?:기다리|대기\s*중|미답|안\s*답)[^\n]{0,8}(?:질문|승인)|(?:질문|승인)[^\n]{0,6}(?:기다리|대기|있어|있나|남아)|열린\s*(?:카드|선택)|되묻기',re.I)
 NAMES = re.compile(r'코덱스|codex|클로드|claude',re.I)
 
 ASK_LABELS = {'work':'{label} 작업에 지시로 보내기','answer':'기다리는 질문의 답변으로 보내기',
@@ -125,6 +127,10 @@ def plan_input(bot, message, source):
     with bot.store.connect() as db:
         current = db.execute('SELECT agent FROM telegram_agent_focus WHERE chat_id=?',(chat,)).fetchone()
         legacy = sessions.focused(chat)
+        if not invoked and not anchor and ROUTING_QUERY.search(text) and classify(text)!='work':
+            # A question about the routing state itself is answered by the bot, with or without a selected model.
+            return {'agent':(current[0] if current else 'codex'),'body':redact_text(text,8000),'target':None,'project':None,
+                    'op':'routing_status','select':False,'takeover':False,'intent':'status'}
         if not invoked and not anchor and not current and not legacy:
             return None
         agent,body = invoked or ((current[0] if current else 'codex'),text)
@@ -147,7 +153,13 @@ def plan_input(bot, message, source):
             waiting=db.execute("SELECT q.body FROM orca_questions q JOIN orca_requests r ON r.id=q.request_id WHERE r.chat_id=? AND r.agent=? AND r.id=? AND q.state='PENDING'",(chat,agent,target_row[0] if target_row else '')).fetchall()
             pending_question=bool(waiting)
             question_context=[redact_text(q['body'],500) for q in waiting[:4]]
-        intent = classify(body) if anchor else interpret(bot,body,agent,pending_question,source,question_context)
+        if not anchor and not base['takeover'] and (not body or body in CHOOSE_WORDS):
+            # Only a name was sent: store the selection without spending an API call.
+            intent = 'ambiguous'
+        elif not anchor and ROUTING_QUERY.search(body) and classify(body)!='work':
+            return base|{'op':'routing_status','intent':'status'}
+        else:
+            intent = classify(body) if anchor else interpret(bot,body,agent,pending_question,source,question_context)
         base['intent']=intent
         if intent=='blocked':
             hint = ('\n기다리는 질문: '+' / '.join(question_context) if question_context else '')
@@ -215,7 +227,7 @@ def plan_input(bot, message, source):
                 if matched and not row:
                     return base|{'reply':'이 모델로 해당 프로젝트에서 시작한 작업이 없습니다.'}
                 return base|{'op':'status','target':row['id'] if row else None}
-            if not body or body in {'선택','선택해','선택해줘','연결','연결해','연결해줘'}:
+            if not body or body in CHOOSE_WORDS:
                 return base|{'op':'choose','target':row['id'] if row else None}
             if intent=='conversation':
                 return base|{'op':'chat','target':row['id'] if row else None}
@@ -349,6 +361,9 @@ def execute(bot, plan, source):
     queue = OrcaQueue.load(bot.store,bot.settings.root)
     if op=='clarify':
         return plan['reply']
+    if op=='routing_status':
+        from app.context import routing_text
+        return routing_text(bot.store,sessions.config,queue.config)
     if op=='assistant':
         # Handled by the assistant layer, which sends its own reply.
         bot._chat_reply(plan['body'],int(source.split(':')[1]))
@@ -364,7 +379,7 @@ def execute(bot, plan, source):
             select(db,chat,agent,plan['target'],source)
         if plan.get('pending_takeover'):
             return _label(agent)+'를 선택했습니다. 이 작업에는 아직 답하지 않은 질문 또는 승인이 있습니다. 원래 질문에 답하거나 승인 버튼을 선택해 주세요. 대화 인수 요청을 결정 답변으로 보내지 않았습니다.'
-        return _label(agent)+'를 선택했습니다. '+('같은 모델의 이전 작업으로 다음 지시를 보냅니다.' if plan['target'] else '작업할 프로젝트와 할 일을 알려 주세요.')
+        return _label(agent)+'로 바꿨습니다. 이어서 말씀하세요.'+(' 같은 모델의 이전 작업으로 다음 지시를 보냅니다.' if plan['target'] else ' 작업을 시키려면 프로젝트와 할 일을 알려 주세요.')
     if op=='status':
         text = sessions.describe(chat,plan['target']) if agent=='codex' and not plan.get('native') else queue.describe(plan['target'] or '',chat_id=chat,agent=agent)
         if status_query(plan['body'])=='mixed':
@@ -500,12 +515,12 @@ def handle_message(bot, message, update_id):
         reply = execute(bot,plan,source)
         if reply is None:
             return True
-        label = _label(plan['agent'])
+        label = '' if plan['op']=='routing_status' else _label(plan['agent'])
     except (ConflictError,ValueError) as exc:
         reply = str(exc);label = _label(plan['agent']) if plan else '모델 선택'
     markup = ask_keyboard(bot,plan,source) if plan and plan.get('ask') else None
     if markup and plan.get('order'):
         bot._notify('agent-route:'+source,ask_card(plan),reply_markup=markup)
         return True
-    bot._notify('agent-route:'+source,html.escape('[봇 안내 · '+label+']\n'+reply),reply_markup=markup)
+    bot._notify('agent-route:'+source,html.escape(('[봇 안내 · '+label+']' if label else '[봇 안내]')+'\n'+reply),reply_markup=markup)
     return True
