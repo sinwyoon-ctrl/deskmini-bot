@@ -247,6 +247,26 @@ by: telegram
 탭 뒤: 마지막 줄이 `✅ 2번 선택 · 10/20 21:05` 로 바뀌고 버튼 없음.
 다중 선택(F-2): `[ ☑ 1 ]  [ ☐ 2 ]  [ ☑ 3 ]  [ 완료 ]`.
 
+## G. 폰 확인 1회차 결함 2건 (2026-10-20 22:00 KST, 운영 8e33781)
+
+### G-1. 이름만 부르면("클로드야") API 없이 선택 저장 + 짧은 확인
+- 증거: `telegram:198250389` 본문 `""` → `interpret()` 가 빈 content 로 Claude API 호출 → `400 Bad Request` → `AGENT_ROUTE_INTERPRETATION_FAILED` → lexical ambiguous → `blocked` → 선택 저장 안 됨(op clarify, choose 없음) → 다음 메시지가 코덱스로 감.
+- 수정(`app/agent_routing.py plan_input`): `intent` 를 구하기 **전에** `body` 가 비었거나 `{'선택','선택해','선택해줘','연결','연결해','연결해줘'}` 이거나 호격·인사만(`^(?:안녕|하이|ㅎㅇ|반가워|hi|hello|hey)[!.~ ]*$`, 대소문자 무시)이면 `interpret()` 를 부르지 않고 `intent='ambiguous'` 로 두고 그대로 `route()` → 기존 `op:'choose'` 분기(인사만인 경우도 choose 로 가도록 route 의 `if not body or body in {...}` 조건에 인사 패턴을 더한다). 인사 답변을 모델 CLI 로 보내지 않는다 — 기존 `tests/test_agent_router.py::test_schema_valid_misinterpretation_cannot_turn_greeting_into_work` 는 '클로드야 안녕' 뒤 conversation job 이 없음을 이미 단언하므로 그대로 두고, `tests/test_telegram_90.py` 의 새 시험이 선택 저장·확인 문구를 단언한다.
+- 방어(`app/agent_router.py interpret`): `body.strip()` 이 비면 API 를 부르지 않고 `'ambiguous'` 반환(이벤트 기록 없음).
+- 확인 문구(`execute` op choose): `클로드로 바꿨습니다. 이어서 말씀하세요.` + (target 있으면 ` 같은 모델의 이전 작업으로 다음 지시를 보냅니다.`, 없으면 ` 작업을 시키려면 프로젝트와 할 일을 알려 주세요.`). `pending_takeover` 문구는 그대로. 기존 시험이 '를 선택했습니다' 를 단언하면 그 단언만 새 문구로 바꾼다(커밋 메시지에 명시).
+- 시험(`tests/test_telegram_90.py` 에 추가, SemanticFixture): '클로드야' / '코덱스야' / '클로드야 안녕' → `complete` 호출 0회(`assert_not_called`), `telegram_agent_focus` 가 그 모델, 응답에 '바꿨습니다', `telegram_conversation_jobs` 0건, blocked 문구 없음; API 가 죽어 있어도(`side_effect=RuntimeError`) 같음; `interpret(bot,'   ','claude')` 가 'ambiguous' 이고 `AGENT_ROUTE_INTERPRETATION%` 이벤트 0건.
+
+### G-2. 라우팅 상태 질문은 특정 작업 status 가 아니라 routing_summary 로 답한다
+- 증거: `telegram:198250393` "지금 어떤 모델 골라져 있고 답 기다리는 질문 있어?" → API intent=status(agent codex) → `op:'status'` → 코덱스 연결시험 작업 상태 카드.
+- 판단: **결정적 봇 안내**로 답한다(비서 LLM 이 아니라). 사실 상태는 코드가 정확히 알고, API 호출·지연·오해석이 없다. 비서는 스냅샷 `telegram_routing` 으로 보조 설명만.
+- 수정:
+  - `app/context.py`: `routing_text(store, codex_config=None, orca_config=None) -> str` 신설 — `routing_summary(store)` 를 한국어 줄로: `지금 고른 모델: 클로드` (없으면 `없음 — 비서가 답합니다`), `클로드 연결: <프로젝트 라벨> · <state>` / `코덱스 연결: …`(targets 에 있는 것만; 라벨은 `telegram_copy.project_name(config, project)`, config 가 None 이면 project 키 그대로), `답 기다리는 질문: 코덱스 N · 클로드 N`, `열린 선택 카드: N건`(0이면 생략), `대기 중 외부 승인: ID, ID`(없으면 생략), 마지막 줄 `모델을 바꾸려면 "클로드야"/"코덱스야", 비서로 돌아가려면 /assistant`. `routing_summary` 가 '미확인' 이면 `라우팅 상태를 확인하지 못했습니다.`. 길이 ≤ 1,000자, `redact_text`.
+  - `app/agent_routing.py`: 모듈 상수 `ROUTING_QUERY = re.compile(r'(?:어떤|무슨|어느|누구|뭐)\s*모델|모델(?:이|은|을)?\s*(?:골라|선택|잡혀|연결)|골라져|선택(?:돼|되어|된)\s*(?:있|거)|(?:기다리|대기\s*중|미답|안\s*답)[^\n]{0,8}(?:질문|승인)|(?:질문|승인)[^\n]{0,6}(?:기다리|대기|있어|있나|남아)|열린\s*(?:카드|선택)|되묻기', re.I)`. `plan_input` 에서 `intent` 계산 **전에**(API 호출 전), `anchor` 가 없고 `classify(body) != 'work'` 이고 `ROUTING_QUERY.search(body)` 이면 `return base|{'op':'routing_status','intent':'status'}` (select 는 invoked 그대로 — "클로드야 지금 어떤 모델이야" 도 선택을 바꾸고 답한다).
+  - 모델 선택이 없어도 답하도록: `plan_input` 맨 앞의 `if not invoked and not anchor and not current and not legacy: return None` **앞에서** 같은 조건(`ROUTING_QUERY` 매치·`classify(text)!='work'`·anchor 없음)이면 `{'agent': (current[0] if current else 'codex'), 'body': redact_text(text,8000), 'target':None,'project':None,'op':'routing_status','select':False,'takeover':False,'intent':'status'}` 를 돌려준다.
+  - `execute`: `op=='routing_status'` → `from app.context import routing_text; return routing_text(bot.store, sessions.config, queue.config)`; `handle_message` 의 안내 머리말은 이 op 일 때 `'[봇 안내]'`(모델 라벨 없이).
+  - 금지: 기존 `status_query`(작업 진행 조회 "어디까지 했어")는 건드리지 않는다. work 로 분류되는 문장("클로드야 모델 선택 기능 코드 고쳐줘")은 매치해도 라우팅 상태로 가지 않는다.
+- 시험(`tests/test_telegram_90.py` + `tests/test_context_routing.py`): 실제 문장 "지금 어떤 모델 골라져 있고 답 기다리는 질문 있어?"(코덱스 선택·클로드 미답 질문 1 상태) → 응답에 `지금 고른 모델: 코덱스`, `클로드 1`, `complete` 호출 0회, 코덱스 상태 카드 문구('지금 대화하는 작업') 없음, 질문 PENDING 유지; 선택 없음 상태에서도 `[봇 안내]` 로 답하고 `_chat_reply` 미호출; "클로드야 모델 선택 기능 코드 고쳐줘" 는 라우팅 상태로 가지 않음(work 경로); "지금 어디까지 했어?" 는 기존 status 그대로; `routing_text` 단위: 빈 상태 문구·외부 승인 ID 표시·'미확인' 처리·길이 ≤1,000.
+
 ## 검토 기준 (Fable)
 
 - 전체 회귀 통과 수가 570 + 신규 이상이고 기존 시험 변경이 없다(변경이 필요하면 이유 명시).
