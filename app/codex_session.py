@@ -318,14 +318,30 @@ def handle_message(bot, message, update_id):
     return True
 
 
-def handle_callback(bot, data):
+def handle_callback(bot, data, message=None):
+    from app import cards
     _, key, answer = data.split(':', 2)
+    chat = bot.settings.allowed_chat_id
+    if answer == 'free':
+        # [✏️ 직접 입력]: the next text message becomes the answer; nothing is sent to Codex now.
+        with bot.store.connect() as db:
+            waiting = db.execute("SELECT q.method FROM codex_questions q JOIN codex_sessions s ON s.id=q.session_id WHERE q.id=? AND s.chat_id=? "
+                                 "AND q.state='PENDING' AND q.expires_at>?",(key,chat,utc_now())).fetchone()
+        if not waiting or waiting['method'] not in {'item/tool/requestUserInput','agentMessage/questions'}:
+            bot._send('[봇 안내 · 코덱스]\n이미 처리되었거나 만료된 질문입니다. 현재 질문을 확인해 주세요')
+            return
+        from app.direct_inputs import arm
+        arm(bot,'codex',key,message)
+        return
     sessions = CodexSessions(bot.store, load_config(bot.settings.root))
-    sessions.answer(bot.settings.allowed_chat_id, key, answer)
+    sessions.answer(chat, key, answer)
     reply = {'accept':'이번 실행을 허용한다는 답을 받았습니다.', 'decline':'이 요청을 거절한다는 답을 받았습니다.', 'cancel':'요청을 거절하고 중단한다는 답을 받았습니다.'}.get(answer,'답변을 받았습니다.')
+    verdict = {'accept':'✅ 이번만 허용됨','decline':'⛔ 허용 안 함','cancel':'⛔ 거절하고 중단'}.get(answer,'✅ '+answer+'번 선택' if answer.isdigit() else '✅ 답변 접수')
     if answer == 'accept':
         with bot.store.connect() as db:
             question = db.execute('SELECT method FROM codex_questions WHERE id=?',(key,)).fetchone()
         if question['method'] == 'item/permissions/requestApproval':
             reply = '이번 요청의 작업이 끝날 때까지 권한을 허용한다는 답을 받았습니다.'
-    bot._send('[봇 안내 · 코덱스]\n'+reply+'\n코덱스의 처리 결과를 확인한 뒤 알려드리겠습니다.')
+            verdict = '✅ 이번 작업 동안 허용됨'
+    cards.mark_decided(bot,message,cards.verdict_line(verdict,cards.now_of(bot)),
+                       fallback=reply+'\n코덱스의 처리 결과를 확인한 뒤 알려드리겠습니다.',prefix='[봇 안내 · 코덱스]\n')

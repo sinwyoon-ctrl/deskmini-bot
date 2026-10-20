@@ -11,6 +11,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from app import cards
 from app.codex_session import CodexSessions, load_config
 from app.config import Settings
 from app.redact import redact, redact_text
@@ -205,15 +206,25 @@ class Bridge:
             safe = redact(p)
             visible = p.get('reason') or ''
         buttons = []
+        waits = '10분 안에'
         if method in {'item/tool/requestUserInput', ASYNC_QUESTION} and not secret:
             multiple = len(safe['questions']) > 1
-            visible = ('선택한 내용을 알려 주세요.\n\n' if method == ASYNC_QUESTION else '작업을 이어가려면 답변이 필요합니다.\n\n')+'\n\n'.join(
-                (str(n+1)+'. ' if multiple else '')+q['question']+'\n'+'\n'.join(
-                    ('• ' if multiple else str(i+1)+'. ')+o['label']+('\n   '+o['description'] if o.get('description') else '')
-                    for i,o in enumerate(q.get('options') or [])) for n,q in enumerate(safe['questions']))
-            if len(safe['questions']) == 1:
-                buttons = [[{'text':o['label'][:60],'callback_data':f'cx:{key}:{i+1}'}] for i,o in enumerate(safe['questions'][0].get('options') or [])][:8]
-            visible += ('\n\n이 메시지에 답장해 질문 번호와 답을 한 줄씩 적어 주세요.\n예: 1. 첫 번째 답\n2. 두 번째 답' if multiple else '\n\n아래 버튼을 누르거나 이 메시지에 답장해 주세요.' if buttons else '\n\n이 메시지에 답장을 보내 주세요.')
+            if multiple:
+                visible = ('선택한 내용을 알려 주세요.\n\n' if method == ASYNC_QUESTION else '작업을 이어가려면 답변이 필요합니다.\n\n')+'\n\n'.join(
+                    str(n+1)+'. '+q['question']+'\n'+'\n'.join('• '+o['label']+('\n   '+o['description'] if o.get('description') else '')
+                        for o in (q.get('options') or [])) for n,q in enumerate(safe['questions']))
+                visible += '\n\n이 메시지에 답장해 질문 번호와 답을 한 줄씩 적어 주세요.\n예: 1. 첫 번째 답\n2. 두 번째 답\n\n⏳ '+waits
+                buttons = [[{'text':cards.OTHER_LABEL,'callback_data':f'cx:{key}:free'}]]
+            else:
+                question = safe['questions'][0]
+                options = [(o['label'],o.get('description') or '') for o in (question.get('options') or [])]
+                labels = [o[0] for o in options]
+                tail = '버튼을 누르거나 이 메시지에 답장해 주세요.' if options else '아래 [✏️ 직접 입력]을 누르거나 이 메시지에 답장해 주세요.'
+                visible = cards.choice_card(None,question['question'],options,
+                    body=('선택한 내용을 알려 주세요.' if method == ASYNC_QUESTION else '작업을 이어가려면 답변이 필요합니다.')+'\n'+tail,
+                    expires=waits,escape=False)
+                markup = cards.choice_buttons(min(len(options),8),f'cx:{key}:{{n}}',labels=labels,other=f'cx:{key}:free')
+                buttons = markup['inline_keyboard']
         elif method in {'item/commandExecution/requestApproval','item/fileChange/requestApproval','item/permissions/requestApproval'}:
             detail_fields = {k:safe[k] for k in ('command','cwd','additionalPermissions','networkApprovalContext','grantRoot','permissions','reason') if safe.get(k) is not None}
             if method == 'item/fileChange/requestApproval':
@@ -222,22 +233,30 @@ class Bridge:
             incomplete = len(detail)>2500 or (method == 'item/fileChange/requestApproval' and not detail_fields['changes']) or (method == 'item/commandExecution/requestApproval' and not any(safe.get(k) for k in ('command','networkApprovalContext')))
             if incomplete:
                 safe['_telegram_approval_unavailable'] = True
-            visible = '실행 전에 확인이 필요합니다.\n아래 내용을 확인한 뒤 허용 여부를 골라 주세요.\n\n'+detail[:2500]+ ('\n\n전체 실행 범위를 표시하지 못해 승인 버튼을 숨겼습니다. Orca에서 상세 내용을 확인해 주세요.' if incomplete else '\n\n허용하면 아래 범위의 실행을 진행합니다.')
             decisions = safe.get('availableDecisions') or ['accept','decline']
             allow_label = '이번만 허용'
+            note = ('\n\n전체 실행 범위를 표시하지 못해 승인 버튼을 숨겼습니다. Orca에서 상세 내용을 확인해 주세요.' if incomplete else '\n\n허용하면 위 범위의 실행을 진행합니다.')
             if method == 'item/permissions/requestApproval':
                 allow_label = '이번 작업 동안 허용'
-                visible += '\n허용한 권한은 이번 요청의 작업이 끝날 때까지 적용됩니다. 같은 요청 안에서 여러 번 사용될 수 있습니다.'
-            buttons = [[{'text':label,'callback_data':f'cx:{key}:{value}'} for label,value in [(allow_label,'accept'),('허용 안 함','decline'),('거절하고 중단','cancel')] if value in decisions and (value != 'accept' or not incomplete)]]
+                note += '\n허용한 권한은 이번 요청의 작업이 끝날 때까지 적용됩니다. 같은 요청 안에서 여러 번 사용될 수 있습니다.'
+            effects = {'item/commandExecution/requestApproval':['셸 명령 실행'],'item/fileChange/requestApproval':['파일 변경'],
+                       'item/permissions/requestApproval':['추가 권한 허용']}[method]
+            if safe.get('networkApprovalContext'):
+                effects = effects+['네트워크 접속']
+            visible = cards.approval_card(None,'실행 전 확인 — 아래 작업을 허용할까요?',impact=effects,
+                                          body='확인한 뒤 허용 여부를 골라 주세요.\n\n'+detail[:2500]+note,expires=waits,escape=False)
+            buttons = [[{'text':label,'callback_data':f'cx:{key}:{value}'} for label,value in [('✅ '+allow_label,'accept'),('⛔ 허용 안 함','decline'),('⛔ 거절하고 중단','cancel')] if value in decisions and (value != 'accept' or not incomplete)]]
             if not buttons[0]:
                 buttons = []
+        if not any(line.startswith('⏳') for line in visible.split('\n')):
+            visible += '\n\n⏳ '+waits
         with self.store.transaction() as db:
             inserted = db.execute('INSERT OR IGNORE INTO codex_questions VALUES (?,?,?,?,?,?,?,?,?,?)',
                 (key,session['id'],self.epoch,json.dumps(data['id']),p['turnId'],method,json.dumps(safe), 'PENDING',None,(datetime.now(UTC)+timedelta(minutes=10)).isoformat(timespec='seconds')))
         if inserted.rowcount:
             self.update(session['id'],state='WAITING',turn_id=p['turnId'])
             self.activity(session,'답변 또는 실행 허용 여부를 확인하는 단계입니다.',p['turnId'])
-            self.notify(session,'question:'+key,visible+'\n\n이 확인 요청은 10분 뒤 만료됩니다.',buttons,question_id=key,model=method in {'item/tool/requestUserInput',ASYNC_QUESTION})
+            self.notify(session,'question:'+key,visible,buttons,question_id=key,model=method in {'item/tool/requestUserInput',ASYNC_QUESTION})
 
     async def command(self, row):
         with self.store.transaction() as db:

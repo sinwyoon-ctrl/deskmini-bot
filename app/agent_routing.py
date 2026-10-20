@@ -8,7 +8,7 @@ import re
 import secrets
 from datetime import UTC, datetime, timedelta
 
-from adapters.telegram import inline_keyboard
+from app import cards
 from app.codex_session import CodexSessions, load_config
 from app.codex_status import status_query
 from app.orca_bridge import OrcaQueue
@@ -287,7 +287,8 @@ def plan_input(bot, message, source):
             if stale:
                 text_ = '마지막으로 '+label+'를 고른 지 시간이 지났습니다. '+text_
             order = (['assistant'] if stale else [])+list(choices)+([] if stale else ['assistant'])
-            return base|{'op':'clarify','ask':True,'choose':bool(invoked),'reply':text_,'choices':choices,'order':order}
+            return base|{'op':'clarify','ask':True,'choose':bool(invoked),'reply':text_,'choices':choices,'order':order,
+                         'ask_context':' / '.join(question_context),'stale':stale}
         return route(intent,base)
 
 
@@ -405,11 +406,27 @@ def ask_keyboard(bot, plan, source):
         row = db.execute('SELECT rowid FROM telegram_agent_inputs WHERE source=?',(source,)).fetchone()
     if not row:
         return None
+    order = plan.get('order',[])
+    return cards.choice_buttons(len(order),lambda n:f'ar:{row[0]}:{order[n-1]}')
+
+
+def ask_card(plan):
+    """The numbered ask card (spec F-1): one-line question, 1) 2) 3) list, buttons carry only the numbers."""
     label = _label(plan['agent'])
-    return inline_keyboard([[(ASK_LABELS[key].format(label=label),f'ar:{row[0]}:{key}')] for key in plan.get('order',[])])
+    order = plan.get('order',[])
+    snippet = ' '.join(plan.get('body','').split())
+    snippet = snippet if len(snippet)<=22 else snippet[:21]+'…'
+    body = ''
+    if 'answer' in order and plan.get('ask_context'):
+        body = label+'가 답을 기다리는 질문이 있습니다: '+plan['ask_context']
+    elif plan.get('stale'):
+        body = '마지막으로 '+label+'를 고른 지 시간이 지났습니다.'
+    options = [ASK_LABELS[key].format(label=label) for key in order]
+    return cards.choice_card('[봇 안내 · '+label+']','이 문장을 어디로 보낼까요 — “'+snippet+'”',options,body=body,
+                             expires='고르기 전에는 어디에도 보내지 않습니다')
 
 
-def handle_callback(bot, data):
+def handle_callback(bot, data, message=None):
     """A tap on an ask card sends the saved message exactly one way; later taps are acknowledged, not re-sent."""
     parts = data.split(':',2)
     if len(parts)!=3 or not parts[1].isdigit() or parts[2] not in ASK_LABELS:
@@ -434,8 +451,17 @@ def handle_callback(bot, data):
                 if chosen:
                     _apply_focus(db,bot,chosen,source)
     if notice:
-        bot._send(html.escape('[봇 안내]\n'+notice))
+        if plan and plan.get('picked') and message:
+            order = plan.get('order',[])
+            number = order.index(plan['picked'])+1 if plan['picked'] in order else None
+            cards.mark_decided(bot,message,'이미 처리됨'+(' · %d번 선택'%number if number else ''),fallback=notice)
+        else:
+            bot._send(html.escape('[봇 안내]\n'+notice))
         return
+    order = plan.get('order',[])
+    if choice in order:
+        cards.mark_decided(bot,message,cards.verdict_line('✅ %d번 선택'%(order.index(choice)+1),cards.now_of(bot),'대표'),
+                           fallback='%d번을 선택했습니다.'%(order.index(choice)+1))
     update_id = int(source.split(':')[1])
     if choice=='assistant':
         bot._chat_reply(plan['body'],update_id)
@@ -478,5 +504,8 @@ def handle_message(bot, message, update_id):
     except (ConflictError,ValueError) as exc:
         reply = str(exc);label = _label(plan['agent']) if plan else '모델 선택'
     markup = ask_keyboard(bot,plan,source) if plan and plan.get('ask') else None
+    if markup and plan.get('order'):
+        bot._notify('agent-route:'+source,ask_card(plan),reply_markup=markup)
+        return True
     bot._notify('agent-route:'+source,html.escape('[봇 안내 · '+label+']\n'+reply),reply_markup=markup)
     return True

@@ -97,9 +97,9 @@ def choice_card(sender, title, options, *, recommended=None, reason=None, impact
     return _compose(sender, title, impact, body, expires, escape, middle='\n'.join(rows))
 
 
-def approval_buttons(yes, no, *, detail=None):
+def approval_buttons(yes, no, *, detail=None):  # yes may be None (deny-only card)
     """yes/no/detail are (label, callback_data)."""
-    row = [yes, no] + ([detail] if detail else [])
+    row = [button for button in (yes, no, detail) if button]
     return inline_keyboard([row])
 
 

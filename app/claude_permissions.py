@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import time
 
+from app import cards
 from app.redact import redact
 from app.state import utc_now
 
@@ -182,27 +183,32 @@ def enqueue(db, row, payload, pid, started, ttl=TTL):
         VALUES(?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?,?)""",
         (key,row["id"],payload["session_id"],row["dispatch_id"],runtime["epoch"],pid,started,
          os.getpid(),process_identity(os.getpid()),hashlib.sha256(raw.encode()).hexdigest(),safe[:2500],int(complete),expires,utc_now()))
-    buttons = [{"text": "이번 실행 허용", "callback_data": "clp:allow:" + key}] if complete else []
-    buttons.append({"text": "거절", "callback_data": "clp:deny:" + key})
+    allow = ("✅ 이번 실행 허용", "clp:allow:" + key) if complete else None
+    deny = ("⛔ 거절", "clp:deny:" + key)
     details = safe[:2500]
     if payload['tool_name'] == 'Bash' and isinstance(original['tool_input'], dict) and complete:
         inputs = dict(original['tool_input'])
         command = inputs.pop('command', '')
         reason = inputs.pop('description', '')
-        details = f"하려는 일: {reason or '셸 명령 실행'}\n실행 위치: {payload['cwd']}\n\n실행할 명령:\n{command}"
+        details = f"하려는 일: {reason or '셸 명령 실행'}\n\n실행할 명령:\n{command}"
         if inputs:
             details += "\n추가 조건: " + json.dumps(inputs, ensure_ascii=False)
-    body = ("[봇 안내 · 클로드]\n🔐 실행 허용을 기다립니다\n작업: " + row["project"] + "\n\n" + details
-        + ("" if complete else "\n⚠️ 내용을 전부 표시할 수 없어 원격 허용을 막았습니다.")
-        + f"\n\n{ttl//60}분 안에 선택해 주세요. 이 요청 한 번에만 적용합니다.\n요청: " + key)
-    outgoing = {"chat_id": row["chat_id"], "text": body, "reply_markup": {"inline_keyboard": [buttons]}}
+    where = str(payload['cwd'])
+    where = where if len(where) <= 40 else '…' + where[-39:]
+    body = cards.approval_card("[봇 안내 · 클로드]", "🔐 실행 허용을 기다립니다 — " + str(payload['tool_name'])[:30],
+        impact=["도구 " + str(payload['tool_name'])[:30], "실행 위치 " + where],
+        body="작업: " + row["project"] + "\n\n" + details
+            + ("" if complete else "\n⚠️ 내용을 전부 표시할 수 없어 원격 허용을 막았습니다.")
+            + "\n\n이 요청 한 번에만 적용합니다.\n요청: " + key,
+        expires=f"{ttl//60}분 안에", escape=False)
+    outgoing = {"chat_id": row["chat_id"], "text": body, "reply_markup": cards.approval_buttons(allow, deny)}
     db.execute("""INSERT INTO outbox(dedupe_key,chat_id,method,payload_json,state,next_attempt_at,created_at)
         VALUES(?,?,'sendMessage',?,'PENDING',?,?)""",
         ("clp:"+key,row["chat_id"],json.dumps(outgoing,ensure_ascii=False),utc_now(),utc_now()))
     return key
 
 
-def decide(bot, data):
+def decide(bot, data, message=None):
     try:
         _, action, key = data.split(":")
         if action not in {"allow", "deny"}:
@@ -221,9 +227,12 @@ def decide(bot, data):
                 raise ValueError("Wrong owner")
             db.execute("UPDATE claude_permissions SET state=? WHERE id=? AND state='PENDING'",
                        ("APPROVED" if action == "allow" else "DENIED", key))
-        bot._send('[봇 안내 · 클로드]\n'+("허용을 접수했습니다. 클로드에 전달할 조건을 확인합니다." if action == "allow" else "거절을 접수했습니다."))
+        cards.mark_decided(bot, message, cards.verdict_line("✅ 허용됨" if action == "allow" else "⛔ 거절됨", cards.now_of(bot)),
+                           fallback=("허용을 접수했습니다. 클로드에 전달할 조건을 확인합니다." if action == "allow" else "거절을 접수했습니다."),
+                           prefix='[봇 안내 · 클로드]\n')
     except (ValueError, KeyError):
-        bot._send("[봇 안내 · 클로드]\n이 승인 요청은 만료되었거나 이미 처리했습니다. 새 요청을 확인해 주세요.")
+        cards.mark_decided(bot, message, "⌛ 만료되었거나 이미 처리됨",
+                           fallback="이 승인 요청은 만료되었거나 이미 처리했습니다. 새 요청을 확인해 주세요.", prefix='[봇 안내 · 클로드]\n')
 
 
 def run_hook(db_path, key, workspace, payload, code_root):

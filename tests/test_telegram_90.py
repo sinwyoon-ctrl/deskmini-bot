@@ -4,6 +4,7 @@ Grounded in the production routing log of 10/16-10/20: "자 클로드 텔레그�
 "APRIL-READ-01 승인" (reply to a notify message), "코덱스 한테 전달해", "해제 승인해줘 코덱스" were all refused
 with the same sentence, and "아니 코덱스 비즈아이원 얼마나 남았어" returned Claude's usage while Claude was selected.
 """
+import re
 import tempfile
 import unittest
 from dataclasses import replace
@@ -38,11 +39,17 @@ class SemanticFixture(unittest.TestCase):
     def buttons(self):
         return self.f.buttons()
 
+    def options(self):
+        """Labels of the numbered list of the last card (buttons carry numbers only)."""
+        return [l for l in self.last().split('\n') if re.match(r'^\d\)',l)]
+
     def press(self,label_part):
         """Tap a button on the most recent message that carried buttons (later plain replies do not clear it)."""
         cards=[i for i,item in enumerate(self.f.tg.sent) if item.get('reply_markup')]
         self.assertTrue(cards,'no card with buttons was sent')
-        data=[d for t,d in self.f.buttons(cards[-1]) if label_part in t]
+        numbers=[l.split(')')[0] for l in self.f.tg.sent[cards[-1]]['text'].split('\n') if re.match(r'^\d\)',l) and label_part in l]
+        self.assertEqual(len(numbers),1,self.f.tg.sent[cards[-1]]['text'])
+        data=[d for t,d in self.f.buttons(cards[-1]) if t.split()[0]==numbers[0]]
         self.assertEqual(len(data),1,self.f.buttons(cards[-1]))
         self.f.number+=1
         self.f.press(data[0],update_id=self.f.number+500)
@@ -70,10 +77,11 @@ class AskInsteadOfRefuseTests(SemanticFixture):
             self.f.say('클로드야')
         with self.answer('ambiguous'):
             self.f.say('자 클로드 텔레그램 연동 최적화 작업 계속 할까')
-        self.assertIn('골라 주세요',self.last())
+        self.assertIn('어디로 보낼까요',self.last())
         self.assertNotIn('전달하지 않았습니다',self.last())
-        labels=[t for t,_ in self.buttons()]
+        labels=self.options()
         self.assertEqual(len(labels),3)
+        self.assertEqual([t for t,_ in self.buttons()],['1','2','3'])
         self.assertTrue(any('작업에 지시로' in t for t in labels))
         self.assertTrue(any('대화로 묻기' in t for t in labels))
         self.assertTrue(any('비서' in t for t in labels))
@@ -101,7 +109,7 @@ class AskInsteadOfRefuseTests(SemanticFixture):
         with self.answer('ambiguous'):
             self.f.say('어제 말한 그 건 처리')
         self.assertEqual(len(self.codex_messages()),before)
-        self.assertIn('골라 주세요',self.last())
+        self.assertIn('어디로 보낼까요',self.last())
         self.press('작업에 지시로')
         messages=self.codex_messages()
         self.assertEqual(len(messages),before+1)
@@ -128,7 +136,7 @@ class AskInsteadOfRefuseTests(SemanticFixture):
             self.f.say('그냥 그걸로')
         self.assertEqual(self.f.rows('SELECT state FROM orca_questions')[0]['state'],'PENDING')
         self.assertIn('alpha 또는 beta',self.last())
-        labels=[t for t,_ in self.buttons()]
+        labels=self.options()
         self.assertTrue(any('답변으로 보내기' in t for t in labels))
         self.assertFalse(any('작업에 지시로' in t for t in labels))
         self.press('답변으로 보내기')
@@ -194,7 +202,7 @@ class LapsedSelectionTests(SemanticFixture):
         with self.answer('ambiguous'):
             self.f.say('해제 승인')
         self.assertIn('시간이 지났습니다',self.last())
-        self.assertIn('비서',self.buttons()[0][0])
+        self.assertIn('비서',self.options()[0])
 
     def test_asks_and_clarifications_do_not_refresh_the_selection(self):
         self.select_codex()
@@ -277,7 +285,7 @@ class NamedUsageAndVocativeTests(SemanticFixture):
             self.f.say('해제 승인해줘 코덱스')
         self.assertEqual(self.f.active(),'codex')
         self.assertIn('[봇 안내 · 코덱스]',self.last())
-        self.assertIn('골라 주세요',self.last())
+        self.assertIn('어디로 보낼까요',self.last())
 
 
 class InterpretTests(SemanticFixture):
