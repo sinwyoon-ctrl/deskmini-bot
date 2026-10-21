@@ -696,6 +696,32 @@ class StateStore:
             )
             return inserted.rowcount == 1
 
+    def remember_card(self, dedupe_key: str, chat_id: int, message_id: int, kind: str = "sent") -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO telegram_cards(dedupe_key, chat_id, message_id, kind, created_at) VALUES (?,?,?,?,?)",
+                (dedupe_key, chat_id, int(message_id), kind, utc_now()),
+            )
+
+    def find_card(self, *, keys: list[str] | None = None, turn: str | None = None, max_age_hours: int = 47) -> dict[str, Any] | None:
+        """Card of this request (receipt key) or already bound to this turn; None when too old to edit."""
+        cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat(timespec="seconds")
+        with self.connect() as connection:
+            row = None
+            if turn:
+                row = connection.execute("SELECT * FROM telegram_cards WHERE kind=? AND created_at>=?", ("turn:" + turn, cutoff)).fetchone()
+            for key in keys or []:
+                if row:
+                    break
+                row = connection.execute(
+                    "SELECT * FROM telegram_cards WHERE dedupe_key=? AND kind NOT LIKE 'turn:%' AND created_at>=?", (key, cutoff)
+                ).fetchone()
+            return dict(row) if row else None
+
+    def bind_card(self, dedupe_key: str, turn: str) -> None:
+        with self.connect() as connection:
+            connection.execute("UPDATE telegram_cards SET kind=? WHERE dedupe_key=?", ("turn:" + turn, dedupe_key))
+
     def pending_outbox(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(

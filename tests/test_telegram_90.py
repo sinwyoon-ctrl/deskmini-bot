@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import test_agent_routing as routing
 from app.agent_router import interpret
+from app.telegram_copy import COPY
 from app.agent_routing import address, named_agents
 from app.chat import ChatConfig, ChatResponder
 
@@ -99,7 +100,7 @@ class AskInsteadOfRefuseTests(SemanticFixture):
         self.assertEqual(len(jobs),1)
         self.assertEqual((jobs[0]['agent'],jobs[0]['operation']),('claude','chat'))
         self.assertIn('텔레그램 연동 최적화',jobs[0]['body'])
-        self.assertIn('답변을 준비하고 있습니다',self.last())
+        self.assertIn(COPY['chat_pending'],self.last())
         self.press('대화로 묻기')
         self.assertEqual(len(self.jobs()),1)
         self.assertIn('이미 처리한 선택',self.last())
@@ -115,7 +116,7 @@ class AskInsteadOfRefuseTests(SemanticFixture):
         messages=self.codex_messages()
         self.assertEqual(len(messages),before+1)
         self.assertIn('어제 말한 그 건 처리',messages[-1]['body'])
-        self.assertIn('코덱스에 작업 요청을 접수',self.last())
+        self.assertIn(COPY['codex_received'],self.last())
         # Telegram may redeliver the tap; the saved message is not sent twice.
         self.press('작업에 지시로')
         self.assertEqual(len(self.codex_messages()),before+1)
@@ -158,8 +159,7 @@ class AskInsteadOfRefuseTests(SemanticFixture):
         with patch.object(self.f.bot.chat.claude,'complete',side_effect=RuntimeError('unavailable')):
             self.f.say('클로드야 텔레그램 봇 README 수정해줘')
         self.assertEqual(self.f.queue.rows(),[])
-        self.assertIn('전달하지 않았습니다',self.last())
-        self.assertIn('다시 보내 주세요',self.last())
+        self.assertIn(COPY['blocked'],self.last())
         self.assertEqual(self.f.tg.sent[-1].get('reply_markup'),None)
 
 
@@ -313,8 +313,8 @@ class NameOnlyTests(SemanticFixture):
             self.f.say(text)
         call.assert_not_called()
         self.assertEqual(self.f.active(),agent)
-        self.assertIn('바꿨습니다',self.last())
-        self.assertNotIn('전달하지 않았습니다',self.last())
+        self.assertIn(COPY['choose'].format(agent={'claude':'클로드','codex':'코덱스'}[agent]),self.last())
+        self.assertNotIn(COPY['blocked'],self.last())
         self.assertEqual(self.jobs(),[])
 
     def test_bare_names_select_without_api(self):
@@ -327,11 +327,11 @@ class NameOnlyTests(SemanticFixture):
 
     def test_confirmation_wording_depends_on_target(self):
         self.check('클로드야','claude')
-        self.assertIn('프로젝트와 할 일',self.last())
+        self.assertIn(COPY['choose_no_target'].strip(),self.last())
         with self.answer('work'):
             self.f.claude()
         self.check('클로드야','claude')
-        self.assertIn('이전 작업으로 다음 지시',self.last())
+        self.assertIn(COPY['choose_target'].strip(),self.last())
 
     def test_interpret_blank_body_is_ambiguous_without_event(self):
         with self.answer('work') as call:

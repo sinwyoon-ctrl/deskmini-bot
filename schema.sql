@@ -147,6 +147,15 @@ CREATE TABLE IF NOT EXISTS outbox (
     sent_at TEXT
 );
 
+-- 보낸 안내 카드의 message_id (outbox dedupe_key 기준). 같은 요청의 접수→시작→완료 안내를 한 카드로 갱신할 때 쓴다.
+CREATE TABLE IF NOT EXISTS telegram_cards (
+    dedupe_key TEXT PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    kind TEXT,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS chat_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id INTEGER NOT NULL,

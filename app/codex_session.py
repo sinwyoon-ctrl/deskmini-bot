@@ -10,7 +10,7 @@ from pathlib import Path
 
 from app.redact import redact_text
 from app.state import ConflictError, utc_now
-from app.telegram_copy import local_time, project_name, state_label
+from app.telegram_copy import activity_line, local_time, meta_footer, project_name, state_label
 from app.codex_status import status_query
 
 
@@ -203,7 +203,9 @@ class CodexSessions:
                 label = '받은 답변을 전달하는 중'
             card += '\n상태: '+label+'\n마지막 확인: '+local_time(row['observed_at'])
             if activity:
-                card += '\n\n마지막으로 확인한 동작\n'+activity['summary']+'\n동작 확인: '+local_time(activity['observed_at'])
+                line = activity_line(activity['summary'],activity['observed_at'],label)
+                if line:
+                    card += '\n'+line
             pending = [q for q in questions if q['state']=='PENDING' and q['epoch']==epoch and q['expires_at']>utc_now()]
             if pending:
                 params = json.loads(pending[0]['params'])
@@ -216,7 +218,7 @@ class CodexSessions:
                 card += '\n\n마지막 응답\n'+row['last_text'][:600]
             if row['state'] == 'UNKNOWN' and row['thread_id']:
                 card += '\n\n대화 연결을 복구하려면:\n/codex recover '+row['id']+'\n복구해도 이전 지시를 자동으로 다시 실행하지 않습니다.'
-            card += '\n대화 번호: '+row['id']
+            card += '\n'+meta_footer('대화',row['id'])
             cards.append(card)
         return status+'\n\n'+('\n\n'.join(cards) or '아직 연결한 작업이 없습니다.\n예: 코덱스로 연결시험 README를 읽어줘')
 

@@ -18,7 +18,7 @@ from pathlib import Path
 from app.orca_handoff import Handoff, LABELS, choice, project_context
 from app.redact import redact_text
 from app.state import StateStore, utc_now
-from app.telegram_copy import local_time, message_card, project_name, sender_title
+from app.telegram_copy import COPY, local_time, message_card, meta_footer, project_name, sender_title
 
 TERMINAL = {"SUCCEEDED", "FAILED"}
 ACTIVE = {"CREATING", "STARTING", "RUNNING", "UNKNOWN", "ATTENTION", "HANDOFF", "STOPPING", "BLOCKED"}
@@ -202,7 +202,7 @@ class OrcaBridge:
     def notify(self, row, state, text, db=None, *, model=False, question_id=None):
         if row["chat_id"] is None:
             return
-        footer = ('질문 번호: '+question_id+'\n' if question_id else '')+'작업 번호: '+row['id']
+        footer = (('질문 번호: '+question_id+'\n') if question_id else '')+'작업 번호: '+row['id']
         payload = {"chat_id":row["chat_id"],"text":message_card(
             sender_title(row['agent'],project_name(self.config,row['project']),model=model),text,footer)}
         key = f"orca:{row['id']}:{state}"
@@ -511,7 +511,7 @@ class OrcaBridge:
                     raise RuntimeError('Missing native message receipt')
                 with self.queue.store.connect() as db:
                     db.execute("UPDATE orca_chat_commands SET state='SENT',receipt=? WHERE id=?",(redact_text(json.dumps(result,ensure_ascii=False),6000),command['id']))
-                self.notify(row,'chat:'+command['id']+':sent','추가 지시를 원래 작업자의 수신함에 전달했습니다. 읽고 반영했는지는 결과로 확인합니다.')
+                self.notify(row,'chat:'+command['id']+':sent',COPY['orca_sent'])
             except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired):
                 with self.queue.store.connect() as db:
                     db.execute("UPDATE orca_chat_commands SET state='UNKNOWN' WHERE id=?",(command['id'],))

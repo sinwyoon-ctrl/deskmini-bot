@@ -16,7 +16,7 @@ from app.codex_session import CodexSessions, load_config
 from app.config import Settings
 from app.redact import redact, redact_text
 from app.state import StateStore, utc_now
-from app.telegram_copy import approval_details, error_detail, message_card, project_name, sender_title
+from app.telegram_copy import COPY, approval_details, error_detail, message_card, meta_footer, project_name, sender_title
 
 
 LOG = logging.getLogger('codex-bridge')
@@ -71,9 +71,13 @@ class Bridge:
             db.execute('INSERT INTO codex_activity VALUES (?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET epoch=excluded.epoch,turn_id=excluded.turn_id,summary=excluded.summary,observed_at=excluded.observed_at',
                 (session['id'],self.epoch,turn_id,redact_text(summary,400),utc_now()))
 
-    def notify(self, session, key, text, buttons=None, question_id=None, *, model=False):
-        footer = ('확인 번호: '+question_id+'\n' if question_id else '')+'대화 번호: '+session['id']
-        payload = {'chat_id':session['chat_id'], 'text':message_card(sender_title('codex',project_name(self.config,session['project']),model=model),text,footer)}
+    def notify(self, session, key, text, buttons=None, question_id=None, *, model=False, card=None):
+        footer = meta_footer('대화',session['id'],('확인 번호: '+question_id) if question_id else None)
+        title = sender_title('codex',project_name(self.config,session['project']),model=model)
+        payload = {'chat_id':session['chat_id'], 'text':message_card(title,text,footer)}
+        if card:
+            # Bot flush edits the request's receipt card instead of sending this text; falls back to sending it.
+            payload['card_update'] = dict(card, text=message_card(title,card['text'],footer))
         if buttons:
             payload['reply_markup'] = {'inline_keyboard':buttons}
         source = 'codex:'+self.epoch+':'+key
@@ -81,6 +85,16 @@ class Bridge:
             with self.store.connect() as db:
                 db.execute('INSERT OR IGNORE INTO telegram_model_sources VALUES(?,?)',(source,'codex'))
         self.store.queue_outbox(dedupe_key=source, chat_id=session['chat_id'], method='sendMessage', payload=payload)
+
+    def receipt_keys(self, session, turn_id):
+        """Outbox keys of the receipt card for the user message that started this turn (newest unanswered message command)."""
+        with self.store.connect() as db:
+            row = db.execute("SELECT source FROM codex_commands WHERE session_id=? AND op='message' AND expected_turn IS NULL "
+                             "AND state IN ('SENDING','ACKED') ORDER BY rowid DESC LIMIT 1",(session['id'],)).fetchone()
+        # A turn started by a question answer must not reach back into an older request's receipt card.
+        if not row or row['source'].startswith('answer:'):
+            return []
+        return ['agent-route:'+row['source'],'codex:'+row['source']]
 
     async def rpc(self, method, params):
         self.sequence += 1
@@ -148,7 +162,7 @@ class Bridge:
                     db.execute("UPDATE codex_commands SET state='REFUSED',error='A newer turn superseded this question' WHERE source=? AND state='QUEUED'",('answer:'+question['id'],))
             self.update(s['id'],state='RUNNING',turn_id=turn['id'])
             self.activity(s,'이번 요청의 작업을 시작했습니다.',turn['id'])
-            self.notify(s,'started:'+turn['id'],'작업을 시작했습니다.')
+            self.notify(s,'started:'+turn['id'],COPY['codex_started'],card={'keys':self.receipt_keys(s,turn['id']),'turn':turn['id'],'text':COPY['codex_working']})
         elif method == 'item/completed':
             item = p.get('item',{})
             kind = item.get('type')
@@ -188,12 +202,14 @@ class Bridge:
                 db.execute("UPDATE codex_questions SET state='CLOSED' WHERE session_id=? AND turn_id=? AND state IN ('PENDING','ANSWERING','SENDING') AND (method!=? OR ?!='completed')", (s['id'],turn['id'],ASYNC_QUESTION,status))
                 waiting = db.execute("SELECT 1 FROM codex_questions WHERE session_id=? AND method=? AND state IN ('PENDING','ANSWERING','SENDING')",(s['id'],ASYNC_QUESTION)).fetchone()
             self.update(s['id'],state=('WAITING' if waiting else 'IDLE') if status in {'completed','interrupted'} else 'FAILED',turn_id=None)
-            text = {'completed':'이번 요청에 대한 응답을 마쳤습니다.\n이어서 할 일이 있으면 이 대화에 보내 주세요.', 'interrupted':'이번 요청의 작업을 중단했습니다.\n이미 변경된 파일은 자동으로 되돌리지 않습니다.'}.get(status,'오류로 이번 요청을 끝내지 못했습니다.\n/codex status 로 상태를 확인해 주세요.\n\n오류 내용(참고)\n'+redact_text(error_detail(turn.get('error')),700))
+            text = {'completed':COPY['codex_done'], 'interrupted':'이번 요청의 작업을 중단했어요.\n이미 바뀐 파일은 자동으로 되돌리지 않아요.'}.get(status,'오류로 이번 요청을 끝내지 못했습니다.\n/codex status 로 상태를 확인해 주세요.\n\n오류 내용(참고)\n'+redact_text(error_detail(turn.get('error')),700))
             if status == 'completed' and waiting:
-                text = '질문 답변을 기다립니다. 질문의 버튼을 누르거나 질문 메시지에 답장해 주세요.'
+                text = '질문 답변을 기다리고 있어요. 질문의 버튼을 누르거나 질문 메시지에 답장해 주세요.'
             self.activity(s,'질문에 대한 답변을 기다리고 있습니다.' if waiting else {
                 'completed':'이번 요청에 대한 응답을 마쳤습니다.', 'interrupted':'이번 요청이 중단되었습니다.'}.get(status,'이번 요청에서 오류가 보고되었습니다.'),turn['id'])
-            self.notify(s,'completed:'+turn['id'],text)
+            plain = status == 'completed' and not waiting
+            self.notify(s,'completed:'+turn['id'],text,
+                        card={'turn':turn['id'],'text':COPY['codex_done']} if plain else None)
 
     def question(self, session, data):
         p, method = data['params'], data['method']

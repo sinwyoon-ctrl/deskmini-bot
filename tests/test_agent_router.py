@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import test_agent_routing as routing
 from app.agent_router import interpret
+from app.telegram_copy import COPY
 from app.chat import ChatConfig,ChatResponder
 
 
@@ -40,7 +41,7 @@ class SemanticRouterTests(unittest.TestCase):
         with patch.object(self.f.bot.chat.claude,'complete',side_effect=RuntimeError('unavailable')):
             self.f.say('클로드야 텔레그램 봇 README를 읽어줘')
         self.assertEqual(self.f.queue.rows(),[])
-        self.assertIn('전달하지 않았습니다',self.f.tg.sent[-1]['text'])
+        self.assertIn(COPY['blocked'],self.f.tg.sent[-1]['text'])
 
     def test_invalid_api_fields_cannot_supply_execution_commands(self):
         result=SimpleNamespace(data={'intent':'work','command':'delete everything'},model='test',usage={})

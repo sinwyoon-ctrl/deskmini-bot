@@ -15,6 +15,7 @@ import time
 from app import cards
 from app.redact import redact
 from app.state import utc_now
+from app.telegram_copy import COPY
 
 TTL = 600
 
@@ -228,7 +229,7 @@ def decide(bot, data, message=None):
             db.execute("UPDATE claude_permissions SET state=? WHERE id=? AND state='PENDING'",
                        ("APPROVED" if action == "allow" else "DENIED", key))
         cards.mark_decided(bot, message, cards.verdict_line("✅ 허용됨" if action == "allow" else "⛔ 거절됨", cards.now_of(bot)),
-                           fallback=("허용을 접수했습니다. 클로드에 전달할 조건을 확인합니다." if action == "allow" else "거절을 접수했습니다."),
+                           fallback=(COPY["permission_allowed"] if action == "allow" else "거절했어요. 클로드가 이 실행을 하지 않도록 전달할게요."),
                            prefix='[봇 안내 · 클로드]\n')
     except (ValueError, KeyError):
         cards.mark_decided(bot, message, "⌛ 만료되었거나 이미 처리됨",

@@ -2303,10 +2303,33 @@ class ChiefBot:
             self._remember_reply(memory_text or text, "receipt:outbox:" + dedupe_key, reply_markup, once=True)
         self._flush_outbox()
 
+    def _edit_request_card(self, update: dict[str, Any], chat_id: Any) -> bool:
+        """Update the request's earlier card in place. False -> the caller sends the notice as a new message."""
+        card = self.store.find_card(keys=update.get("keys"), turn=update.get("turn"))
+        if not card or card["chat_id"] != chat_id or not isinstance(update.get("text"), str):
+            return False
+        try:
+            self.telegram.edit_message_text(card["chat_id"], int(card["message_id"]), html.escape(update["text"]))
+        except TelegramError as exc:
+            if "message is not modified" not in str(exc).lower():
+                LOG.info("Card edit failed; sending a new message: %s", redact_text(str(exc), 200))
+                return False
+        except (AttributeError, TypeError, ValueError):
+            return False
+        if update.get("turn"):
+            self.store.bind_card(card["dedupe_key"], update["turn"])
+        return True
+
     def _flush_outbox(self) -> None:
         for item in self.store.pending_outbox():
+            payload = dict(item["payload"])
+            update = payload.pop("card_update", None)
+            if update and item["method"] == "sendMessage" and self._edit_request_card(update, payload.get("chat_id")):
+                self.store.update_outbox(item["id"], success=True)
+                continue
+            item["payload"] = payload
             try:
-                self.telegram.call_with_retry(item["method"], item["payload"], attempts=1)
+                response = self.telegram.call_with_retry(item["method"], item["payload"], attempts=1)
             except TelegramError as exc:
                 state = self.store.update_outbox(
                     item["id"],
@@ -2323,6 +2346,8 @@ class ChiefBot:
                     )
             else:
                 self.store.update_outbox(item["id"], success=True)
+                if item["method"] == "sendMessage" and isinstance(response, dict) and response.get("message_id"):
+                    self.store.remember_card(item["dedupe_key"], item["chat_id"], response["message_id"])
                 if item["method"] == "sendMessage" and item["chat_id"] == self.settings.allowed_chat_id:
                     self._remember_reply(item["payload"].get("text", ""), "receipt:outbox:" + item["dedupe_key"],
                                          item["payload"].get("reply_markup"), once=True)

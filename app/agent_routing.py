@@ -14,7 +14,7 @@ from app.codex_status import status_query
 from app.orca_bridge import OrcaQueue
 from app.redact import redact_text
 from app.state import ConflictError, utc_now
-from app.telegram_copy import project_name
+from app.telegram_copy import COPY, choose_text, project_name
 from app.agent_router import interpret
 from app.agent_intent import classify
 
@@ -162,9 +162,8 @@ def plan_input(bot, message, source):
             intent = classify(body) if anchor else interpret(bot,body,agent,pending_question,source,question_context)
         base['intent']=intent
         if intent=='blocked':
-            hint = ('\n기다리는 질문: '+' / '.join(question_context) if question_context else '')
-            return base|{'reply':'요청의 뜻이나 중간 해석 결과를 하나로 확인하지 못해 작업 지시나 결정 답변을 전달하지 않았습니다. '
-                                 '결정이면 원래 질문 카드에 답장하거나 버튼을 눌러 주시고, 새 지시나 질문이면 문장을 풀어서 다시 보내 주세요.'+hint}
+            hint = ('\n'+COPY['blocked_waiting']+' / '.join(question_context)+'\n'+COPY['blocked_decision'] if question_context else '')
+            return base|{'reply':COPY['blocked']+hint}
         if intent=='quota':
             # "코덱스 쿼터 얼마나 남았어" while Claude is selected reads Codex, not the selected model.
             named = named_agents(body)
@@ -373,13 +372,13 @@ def execute(bot, plan, source):
             return plan['quota_reply']
         from app.agent_conversation import enqueue
         enqueue(bot.store,chat,source,agent,plan['body'],plan.get('conversation',{}),operation=op)
-        return ('사용 한도 기록을 조회하고 있습니다. 관측된 수치와 시각을 알려드리겠습니다.' if op=='quota' else '답변을 준비하고 있습니다. 기존 작업과 미답 질문은 유지합니다.')
+        return COPY['quota_pending'] if op=='quota' else COPY['chat_pending']
     if op=='choose':
         with bot.store.transaction() as db:
             select(db,chat,agent,plan['target'],source)
         if plan.get('pending_takeover'):
             return _label(agent)+'를 선택했습니다. 이 작업에는 아직 답하지 않은 질문 또는 승인이 있습니다. 원래 질문에 답하거나 승인 버튼을 선택해 주세요. 대화 인수 요청을 결정 답변으로 보내지 않았습니다.'
-        return _label(agent)+'로 바꿨습니다. 이어서 말씀하세요.'+(' 같은 모델의 이전 작업으로 다음 지시를 보냅니다.' if plan['target'] else ' 작업을 시키려면 프로젝트와 할 일을 알려 주세요.')
+        return choose_text(_label(agent),bool(plan['target']))
     if op=='status':
         text = sessions.describe(chat,plan['target']) if agent=='codex' and not plan.get('native') else queue.describe(plan['target'] or '',chat_id=chat,agent=agent)
         if status_query(plan['body'])=='mixed':
@@ -397,13 +396,13 @@ def execute(bot, plan, source):
         from app.shared_conversation import attach
         target = sessions.create(chat,plan['project'],source+':create',focus=False) if op=='new' else plan['target']
         sessions.submit(chat,source,attach(plan['body'],plan.get('conversation',{}),limit=8000),session_id=target)
-        return '코덱스에 작업 요청을 접수했습니다. 처리 결과와 확인할 내용을 여기로 알려드리겠습니다.'
+        return COPY['codex_received']
     if op=='new':
         body = plan['body']
         if len(body)>2500:
             raise ConflictError('클로드 작업 요청은 2,500자 이내로 나누어 보내 주세요.')
         row = queue.submit(source,plan['project'],'claude',body,chat,select_chat=True,conversation=plan.get('conversation'))
-        return ('이전 결과를 참고하는 새 클로드 작업을 접수했습니다.' if plan.get('previous') else '클로드에 작업 요청을 접수했습니다.')+'\n프로젝트: '+project_name(queue.config,row['project'])+'\n작업 번호: '+row['id']
+        return COPY['claude_received_previous' if plan.get('previous') else 'claude_received']+'(프로젝트 '+project_name(queue.config,row['project'])+').\n작업 번호: '+row['id']
     with bot.store.transaction() as db:
         current = db.execute('SELECT * FROM orca_requests WHERE id=? AND chat_id=?',(plan['target'],chat)).fetchone()
         old = db.execute('SELECT * FROM orca_chat_commands WHERE source=?',(source,)).fetchone()
@@ -413,7 +412,7 @@ def execute(bot, plan, source):
             from app.shared_conversation import attach
             db.execute("INSERT INTO orca_chat_commands(id,source,request_id,dispatch_id,body,state,created_at) VALUES(?,?,?,?,?,'QUEUED',?)",('oc-'+secrets.token_hex(6),source,plan['target'],plan['dispatch'],attach(plan['body'],plan.get('conversation',{}),limit=8000),utc_now()))
             select(db,chat,'claude',plan['target'],source)
-    return '진행 중인 클로드 작업에 추가 지시를 접수했습니다. 원래 작업자의 수신함으로 전달하며, 읽고 반영했는지는 처리 결과로 확인합니다.'
+    return COPY['claude_followup']
 
 
 def ask_keyboard(bot, plan, source):

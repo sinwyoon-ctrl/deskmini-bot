@@ -17,6 +17,7 @@ from pathlib import Path
 from app import cards
 from app.redact import redact_text
 from app.state import utc_now
+from app.telegram_copy import COPY
 
 ID_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}'
 ID_RE = re.compile('^'+ID_PATTERN+'$')
@@ -265,8 +266,7 @@ def handle_message(bot, message, update_id):
     bot.store.add_chat_message(chat,'user',text)
     key = 'xapproval-msg:'+str(update_id)
     if not row:
-        bot._notify(key,html.escape("[봇 안내] '"+approval_id+"' 는 봇에 등록된 승인 요청이 아닙니다. 요청한 쪽이 ~/agent-hub/approvals/"+approval_id
-                                    +'.md 로 보내면 승인·거절 버튼이 뜹니다. 이 문장은 어디에도 보내지 않았습니다.'))
+        bot._notify(key,html.escape('[봇 안내] '+COPY['approval_unknown'].format(id=approval_id)))
         return True
     if row['state']=='PENDING':
         bot._notify('xapproval:'+row['id']+':again:'+str(update_id),

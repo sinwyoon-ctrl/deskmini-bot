@@ -13,7 +13,7 @@ from pathlib import Path
 from app.redact import redact_text
 from app.shared_conversation import attach
 from app.state import utc_now
-from app.telegram_copy import local_time
+from app.telegram_copy import COPY, local_time
 
 SYSTEM = ('한국어로 질문에 간결하게 답하세요. 이 호출은 일반 대화 전용입니다. '
           '텔레그램에서는 코덱스·클로드를 이름으로 부를 수 있고, 등록 프로젝트 작업·진행 조회·질문 답변·승인 버튼을 지원합니다. '
@@ -165,13 +165,13 @@ def process_one(store, runner=ask):
             reply=reply or 'Claude CLI에 연결했지만 수치가 제공되지 않아 잔여량을 확인하지 못했습니다. 사용 가능 여부만으로 남은 비율을 추측하지 않았습니다.'
         _finish(store,row,'DONE',reply,model=model)
     except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired):
-        _finish(store,row,'FAILED',label+' 대화 응답을 확인하지 못했습니다. 기존 프로젝트 작업과 질문 답변은 변경하지 않았습니다.',model=False)
+        _finish(store,row,'FAILED',COPY['conversation_failed'].format(agent=label),model=False)
 
 
 def _finish(store,row,state,text,*,model):
     agent=row['agent'];label='코덱스' if agent=='codex' else '클로드'
     key='agent-conversation:'+row['id']
-    payload={'chat_id':row['chat_id'],'text':('['+label+']' if model else '[봇 안내 · '+label+']')+'\n\n'+redact_text(text,3500)}
+    payload={'chat_id':row['chat_id'],'text':('['+label+']' if model else '[봇 안내 · '+label+']')+('\n\n' if model else '\n')+redact_text(text,3500)}
     with store.transaction() as db:
         db.execute('UPDATE telegram_conversation_jobs SET state=? WHERE id=?',(state,row['id']))
         if model:db.execute('INSERT OR IGNORE INTO telegram_model_sources VALUES(?,?)',(key,agent))

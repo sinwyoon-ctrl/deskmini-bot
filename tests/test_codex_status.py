@@ -76,7 +76,7 @@ class ProgressQueries(BotFixture):
         self.bot._handle_update(self.message('지금 뭐 하고 있어?',9020))
         self.assertEqual(self.rows('SELECT * FROM codex_commands'),before)
         self.assertIn('python3 -m unittest checks',self.tg.sent[-1]['text'])
-        self.assertIn('동작 확인:',self.tg.sent[-1]['text'])
+        self.assertIn(' 확인)',self.tg.sent[-1]['text'])
         self.assertNotIn('실행하고 있습니다',self.tg.sent[-1]['text'])
 
     def test_stale_connection_does_not_present_recorded_running_state_as_current(self):

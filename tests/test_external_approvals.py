@@ -1,3 +1,4 @@
+import html
 import os
 import stat
 import subprocess
@@ -8,6 +9,7 @@ import unittest
 from datetime import timedelta
 
 from app import external_approvals as xa
+from app.telegram_copy import COPY
 from tests.test_watch import BotFixture, ROOT
 
 
@@ -136,12 +138,12 @@ class ExternalApprovalTests(BotFixture):
         message['update_id'] = 71
         message['message']['reply_to_message']['text'] = '[승인 요청 NOPE-99]'
         self.bot._handle_update(message)
-        self.assertIn('등록된 승인 요청이 아닙니다', self.tg.sent[-1]['text'])
+        self.assertIn(html.escape(COPY['approval_unknown'].format(id='NOPE-99')), self.tg.sent[-1]['text'])
         self.assertEqual(self.agent_inputs(), 0)
 
     def test_plain_id_and_word_message(self):
         self.bot._handle_update(self.message('APRIL-READ-01 승인', update_id=80))
-        self.assertIn('등록된 승인 요청이 아닙니다', self.tg.sent[-1]['text'])
+        self.assertIn(html.escape(COPY['approval_unknown'].format(id='APRIL-READ-01')), self.tg.sent[-1]['text'])
         self.put()
         xa.scan(self.bot)
         self.bot._handle_update(self.message('april-read-01 승인', update_id=81))
@@ -154,7 +156,7 @@ class ExternalApprovalTests(BotFixture):
         with self.bot.store.transaction() as db:
             db.execute("INSERT INTO telegram_agent_focus VALUES(100,'codex',1)")
         self.bot._handle_update(self.message('APRIL-READ-01 승인', update_id=90))
-        self.assertIn('등록된 승인 요청이 아닙니다', self.tg.sent[-1]['text'])
+        self.assertIn(html.escape(COPY['approval_unknown'].format(id='APRIL-READ-01')), self.tg.sent[-1]['text'])
         self.assertEqual(self.agent_inputs(), 0)
 
     def test_write_failure_keeps_pending(self):

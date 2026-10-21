@@ -448,7 +448,7 @@ class Routes(fixtures.BotFixture):
         question = api.pending(first)[0]
         self.assertLessEqual(len(displayed),3500)
         self.assertIn('확인 번호: '+question['id'],displayed)
-        self.assertIn('대화 번호: '+first,displayed)
+        self.assertTrue(displayed.rstrip().endswith('· 대화 '+first))
         second = api.create(100,'trial','second')
         update = self.message('1. alpha\n2. results',8301)
         update['message']['reply_to_message'] = {'text':displayed}
